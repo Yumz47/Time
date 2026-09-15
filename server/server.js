@@ -1012,6 +1012,7 @@ app.get('/api/punches', async (req, res) => {
         c.check_type,
         c.normalized_type,
         c.sensor_id,
+        e.name,
         e.name AS employee_name,
         e.badge_number,
         d.dept_name
@@ -1024,12 +1025,20 @@ app.get('/api/punches', async (req, res) => {
     `;
     const [rows] = await pool.query(dataSql, [...params, limit, offset]);
 
+    const totalPages = Math.ceil(total / limit);
     res.json({
       page,
       limit,
       total,
-      totalPages: Math.ceil(total / limit),
+      totalPages,
       data: rows,
+      punches: rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: totalPages
+      }
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

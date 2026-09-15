@@ -1648,25 +1648,34 @@ document.addEventListener('DOMContentLoaded', () => {
       const res = await apiFetch(`/api/punches?${params.toString()}`);
       const data = await res.json();
 
-      if (!data.punches.length) {
+      const punches = data.punches || data.data || (Array.isArray(data) ? data : []);
+      const pagination = data.pagination || {
+        page: data.page || 1,
+        pages: data.totalPages || 1,
+        total: data.total || punches.length
+      };
+
+      if (!punches.length) {
         punchesTbody.innerHTML = '<tr><td colspan="7" class="table-empty">No punch activity found</td></tr>';
-        punchPageInfo.textContent = 'Page 1 of 1';
+        if (punchPageInfo) punchPageInfo.textContent = 'Page 1 of 1';
         return;
       }
 
-      punchPageInfo.textContent = `Page ${data.pagination.page} of ${data.pagination.pages} (${data.pagination.total.toLocaleString()} records)`;
-      btnPunchPrev.disabled = data.pagination.page <= 1;
-      btnPunchNext.disabled = data.pagination.page >= data.pagination.pages;
+      if (punchPageInfo) {
+        punchPageInfo.textContent = `Page ${pagination.page} of ${pagination.pages} (${(pagination.total || 0).toLocaleString()} records)`;
+      }
+      if (btnPunchPrev) btnPunchPrev.disabled = pagination.page <= 1;
+      if (btnPunchNext) btnPunchNext.disabled = pagination.page >= pagination.pages;
 
-      punchesTbody.innerHTML = data.punches.map(p => `
+      punchesTbody.innerHTML = punches.map(p => `
         <tr>
           <td class="font-mono"><strong>${formatTime(p.check_time)}</strong></td>
           <td><span class="badge-number font-mono">${escapeHtml(p.badge_number || p.user_id)}</span></td>
-          <td><strong>${escapeHtml(p.name)}</strong></td>
+          <td><strong>${escapeHtml(p.name || p.employee_name)}</strong></td>
           <td>${escapeHtml(p.dept_name || 'General')}</td>
-          <td><span class="status-pill status-${p.normalized_type}">${p.normalized_type.toUpperCase()}</span></td>
-          <td class="font-mono" style="color:var(--text-muted); font-size:0.8rem">${escapeHtml(p.sn || '—')}</td>
-          <td><span class="badge-number">${escapeHtml(p.device_alias || 'Main Reader')}</span></td>
+          <td><span class="status-pill status-${(p.normalized_type || 'in').toLowerCase()}">${(p.normalized_type || 'IN').toUpperCase()}</span></td>
+          <td class="font-mono" style="color:var(--text-muted); font-size:0.8rem">${escapeHtml(p.sn || p.sensor_id || '—')}</td>
+          <td><span class="badge-number">${escapeHtml(p.device_alias || p.sensor_id || 'Main Reader')}</span></td>
         </tr>
       `).join('');
     } catch (e) {

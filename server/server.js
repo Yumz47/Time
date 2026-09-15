@@ -367,6 +367,256 @@ app.get('/api/reports/daily', async (req, res) => {
   }
 });
 
+// ─── DEVICE ADMINISTRATION CRUD ──────────────────────────────────────────────
+
+// 9. List all devices (with punch count from checkinout.sn cross-reference)
+app.get('/api/devices', async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT
+        d.*,
+        COALESCE(pc.punch_count, 0) AS punch_count
+      FROM devices d
+      LEFT JOIN (
+        SELECT sn, COUNT(*) AS punch_count
+        FROM checkinout
+        WHERE sn IS NOT NULL AND sn != ''
+        GROUP BY sn
+      ) pc ON d.sn = pc.sn
+      ORDER BY d.alias ASC, d.sn ASC
+    `);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 9b. Discover & import devices from existing punch data (INSERT IGNORE = skip duplicates)
+app.post('/api/devices/import-from-punches', async (req, res) => {
+  try {
+    const [result] = await pool.query(`
+      INSERT IGNORE INTO devices (sn, alias, model, status)
+      SELECT
+        sn,
+        CONCAT('Device ', sn) AS alias,
+        'ZKTeco' AS model,
+        'active' AS status
+      FROM (
+        SELECT sn
+        FROM checkinout
+        WHERE sn IS NOT NULL AND sn != ''
+        GROUP BY sn
+      ) AS discovered
+    `);
+    res.json({
+      success: true,
+      imported: result.affectedRows,
+      message: result.affectedRows > 0
+        ? `${result.affectedRows} new device(s) imported from punch history`
+        : 'All devices from punch data are already registered',
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 10. Create a device
+app.post('/api/devices', async (req, res) => {
+  const { sn, alias, ip_address, location, model, status } = req.body;
+  if (!sn || !String(sn).trim()) {
+    return res.status(400).json({ error: 'Serial number (SN) is required' });
+  }
+  const validStatuses = ['active', 'inactive'];
+  const deviceStatus = validStatuses.includes(status) ? status : 'active';
+  try {
+    const [result] = await pool.query(
+      `INSERT INTO devices (sn, alias, ip_address, location, model, status)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        String(sn).trim(),
+        alias ? String(alias).trim() : null,
+        ip_address ? String(ip_address).trim() : null,
+        location ? String(location).trim() : null,
+        model ? String(model).trim() : null,
+        deviceStatus,
+      ]
+    );
+    res.status(201).json({ success: true, id: result.insertId });
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: `A device with SN "${sn}" already exists` });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 11. Get single device
+app.get('/api/devices/:id', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM devices WHERE id = ?', [parseInt(req.params.id, 10)]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Device not found' });
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 12. Update a device
+app.put('/api/devices/:id', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const { sn, alias, ip_address, location, model, status } = req.body;
+  if (!sn || !String(sn).trim()) {
+    return res.status(400).json({ error: 'Serial number (SN) is required' });
+  }
+  const validStatuses = ['active', 'inactive'];
+  const deviceStatus = validStatuses.includes(status) ? status : 'active';
+  try {
+    const [result] = await pool.query(
+      `UPDATE devices SET sn=?, alias=?, ip_address=?, location=?, model=?, status=? WHERE id=?`,
+      [
+        String(sn).trim(),
+        alias ? String(alias).trim() : null,
+        ip_address ? String(ip_address).trim() : null,
+        location ? String(location).trim() : null,
+        model ? String(model).trim() : null,
+        deviceStatus,
+        id,
+      ]
+    );
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Device not found' });
+    res.json({ success: true });
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: `A device with SN "${sn}" already exists` });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 13. Delete a device
+app.delete('/api/devices/:id', async (req, res) => {
+  try {
+    const [result] = await pool.query('DELETE FROM devices WHERE id = ?', [parseInt(req.params.id, 10)]);
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Device not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── USER ADMINISTRATION CRUD ─────────────────────────────────────────────────
+
+// 14. Admin user list (employees with total punch count)
+app.get('/api/admin/users', async (req, res) => {
+  try {
+    const search = req.query.search ? `%${req.query.search}%` : null;
+    const deptId = req.query.dept_id ? parseInt(req.query.dept_id, 10) : null;
+
+    let query = `
+      SELECT
+        e.user_id,
+        e.badge_number,
+        e.name,
+        e.gender,
+        e.dept_id,
+        d.dept_name,
+        e.created_at,
+        e.updated_at,
+        COALESCE(pc.punch_count, 0) AS punch_count
+      FROM employees e
+      LEFT JOIN departments d ON e.dept_id = d.dept_id
+      LEFT JOIN (
+        SELECT user_id, COUNT(*) AS punch_count FROM checkinout GROUP BY user_id
+      ) pc ON e.user_id = pc.user_id
+      WHERE 1=1
+    `;
+    const params = [];
+
+    if (search) {
+      query += ` AND (e.name LIKE ? OR e.badge_number LIKE ?)`;
+      params.push(search, search);
+    }
+    if (deptId) {
+      query += ` AND e.dept_id = ?`;
+      params.push(deptId);
+    }
+
+    query += ` ORDER BY e.name ASC`;
+
+    const [rows] = await pool.query(query, params);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 15. Create a user/employee
+app.post('/api/employees', async (req, res) => {
+  const { user_id, badge_number, name, gender, dept_id } = req.body;
+  if (!user_id || !name || !String(name).trim()) {
+    return res.status(400).json({ error: 'User ID and full name are required' });
+  }
+  const uid = parseInt(user_id, 10);
+  if (isNaN(uid) || uid <= 0) {
+    return res.status(400).json({ error: 'User ID must be a positive integer' });
+  }
+  try {
+    await pool.query(
+      `INSERT INTO employees (user_id, badge_number, name, gender, dept_id)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        uid,
+        badge_number ? String(badge_number).trim() : null,
+        String(name).trim(),
+        gender ? String(gender).trim() : null,
+        dept_id ? parseInt(dept_id, 10) : null,
+      ]
+    );
+    res.status(201).json({ success: true });
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: `A user with ID ${user_id} already exists` });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 16. Update a user/employee
+app.put('/api/employees/:id', async (req, res) => {
+  const userId = parseInt(req.params.id, 10);
+  const { badge_number, name, gender, dept_id } = req.body;
+  if (!name || !String(name).trim()) {
+    return res.status(400).json({ error: 'Full name is required' });
+  }
+  try {
+    const [result] = await pool.query(
+      `UPDATE employees SET badge_number=?, name=?, gender=?, dept_id=? WHERE user_id=?`,
+      [
+        badge_number ? String(badge_number).trim() : null,
+        String(name).trim(),
+        gender ? String(gender).trim() : null,
+        dept_id ? parseInt(dept_id, 10) : null,
+        userId,
+      ]
+    );
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'User not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 17. Delete a user/employee (cascades to checkinout via FK)
+app.delete('/api/employees/:id', async (req, res) => {
+  try {
+    const [result] = await pool.query('DELETE FROM employees WHERE user_id = ?', [parseInt(req.params.id, 10)]);
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'User not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Setup scheduled cron if enabled
 const cronPattern = process.env.SYNC_CRON;
 if (cronPattern && cronPattern.trim().toLowerCase() !== 'disabled') {

@@ -42,7 +42,22 @@ CREATE TABLE IF NOT EXISTS checkinout (
     CONSTRAINT fk_punch_emp FOREIGN KEY (user_id) REFERENCES employees(user_id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
--- 4. Sync metadata and audit log
+-- 4. Clock Devices registry
+CREATE TABLE IF NOT EXISTS devices (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    sn VARCHAR(50) NOT NULL UNIQUE,
+    alias VARCHAR(100),
+    ip_address VARCHAR(45),
+    location VARCHAR(150),
+    model VARCHAR(100),
+    status ENUM('active', 'inactive') DEFAULT 'active',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_sn (sn),
+    INDEX idx_status (status)
+) ENGINE=InnoDB;
+
+-- 5. Sync metadata and audit log
 CREATE TABLE IF NOT EXISTS sync_log (
     id INT AUTO_INCREMENT PRIMARY KEY,
     sync_start DATETIME NOT NULL,

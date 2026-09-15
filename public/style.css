@@ -891,6 +891,7 @@ select option {
 
 .toast.error { border-left-color: var(--accent-rose); }
 .toast.success { border-left-color: var(--accent-emerald); }
+.toast.info { border-left-color: var(--accent-cyan); }
 
 @keyframes slideIn {
   from { transform: translateX(100%); opacity: 0; }
@@ -903,3 +904,257 @@ select option {
   color: var(--text-muted);
   font-size: 0.9rem;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   ADMIN MODULES — Devices & Users Administration
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Sidebar Section Label */
+.nav-section-label {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  padding: 18px 16px 6px;
+  opacity: 0.7;
+}
+
+/* Toolbar spacer utility */
+.toolbar-spacer { flex: 1; }
+
+/* Font Mono utility */
+.font-mono { font-family: var(--font-mono); }
+
+/* Small Avatar (used inline in table rows) */
+.avatar-sm {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  font-size: 0.78rem;
+}
+
+/* Table Action Buttons */
+.table-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.btn-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+  background: transparent;
+}
+
+.btn-icon.edit {
+  border-color: rgba(59, 130, 246, 0.3);
+  color: var(--accent-blue);
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.btn-icon.edit:hover {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.25);
+  transform: translateY(-1px);
+}
+
+.btn-icon.delete {
+  border-color: rgba(244, 63, 94, 0.3);
+  color: var(--accent-rose);
+  background: rgba(244, 63, 94, 0.08);
+}
+
+.btn-icon.delete:hover {
+  background: rgba(244, 63, 94, 0.2);
+  border-color: var(--accent-rose);
+  box-shadow: 0 0 10px rgba(244, 63, 94, 0.25);
+  transform: translateY(-1px);
+}
+
+/* Danger Button */
+.btn-danger {
+  padding: 8px 18px;
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: var(--transition-smooth);
+  background: rgba(244, 63, 94, 0.15);
+  border: 1px solid rgba(244, 63, 94, 0.4);
+  color: var(--accent-rose);
+}
+
+.btn-danger:hover {
+  background: rgba(244, 63, 94, 0.28);
+  border-color: var(--accent-rose);
+  box-shadow: 0 0 14px rgba(244, 63, 94, 0.3);
+  transform: translateY(-1px);
+}
+
+/* Device Status Badge */
+.device-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 20px;
+  letter-spacing: 0.02em;
+}
+
+.device-status-badge.active {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--accent-emerald);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.device-status-badge.inactive {
+  background: rgba(100, 116, 139, 0.12);
+  color: var(--text-muted);
+  border: 1px solid rgba(100, 116, 139, 0.25);
+}
+
+/* Punch Count Pill */
+.punch-count-pill {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent-cyan);
+  background: rgba(0, 210, 255, 0.08);
+  border: 1px solid rgba(0, 210, 255, 0.2);
+  padding: 3px 9px;
+  border-radius: 20px;
+}
+
+/* Form Modals */
+.modal-form-card {
+  max-width: 600px !important;
+}
+
+.modal-card-sm {
+  max-width: 440px !important;
+}
+
+.form-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 24px !important;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-group label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.form-group input[type="text"],
+.form-group input[type="number"],
+.form-group select {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: #fff;
+  padding: 10px 14px;
+  font-size: 0.88rem;
+  outline: none;
+  font-family: inherit;
+  width: 100%;
+  transition: var(--transition-smooth);
+}
+
+.form-group input[type="text"]:focus,
+.form-group input[type="number"]:focus,
+.form-group select:focus {
+  border-color: rgba(0, 210, 255, 0.5);
+  background: rgba(0, 210, 255, 0.05);
+  box-shadow: 0 0 0 3px rgba(0, 210, 255, 0.08);
+}
+
+.form-group input[type="text"]:disabled,
+.form-group input[type="number"]:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.form-group input::placeholder {
+  color: var(--text-muted);
+}
+
+.req {
+  color: var(--accent-rose);
+  font-weight: 700;
+}
+
+/* Modal Footer */
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--border-color);
+  background: rgba(0, 0, 0, 0.15);
+}
+
+/* Modal Icon Badge (used in form and delete modals) */
+.modal-icon-badge {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.modal-icon-badge.icon-device {
+  background: rgba(0, 210, 255, 0.12);
+  color: var(--accent-cyan);
+  border: 1px solid rgba(0, 210, 255, 0.2);
+}
+
+.modal-icon-badge.icon-user {
+  background: rgba(139, 92, 246, 0.12);
+  color: var(--accent-purple);
+  border: 1px solid rgba(139, 92, 246, 0.2);
+}
+
+.modal-icon-badge.icon-danger {
+  background: rgba(244, 63, 94, 0.12);
+  color: var(--accent-rose);
+  border: 1px solid rgba(244, 63, 94, 0.2);
+}
+
+/* Responsive form row on small screens */
+@media (max-width: 540px) {
+  .form-row { grid-template-columns: 1fr; }
+  .modal-form-card { max-width: 96vw !important; }
+}
+

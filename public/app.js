@@ -10,6 +10,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const punchLimit = 25;
   let reportData = [];
 
+  // Admin module state
+  let deviceEditId = null;       // null = add mode, number = edit mode
+  let userEditId = null;         // null = add mode, number = edit mode
+  let deletePendingFn = null;    // function to call when delete confirmed
+  let allDevices = [];           // cached for client-side search filter
+  let allUsersAdmin = [];        // cached for client-side search filter
+
   // DOM Elements
   const liveClockEl = document.getElementById('live-clock');
   const bridgeIndicatorEl = document.getElementById('bridge-indicator');
@@ -54,7 +61,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnExportCsv = document.getElementById('btn-export-csv');
   const reportsTbody = document.getElementById('reports-tbody');
 
-  // Modal elements
+  // Modal elements (employee detail)
   const empModal = document.getElementById('employee-modal');
   const btnCloseModal = document.getElementById('btn-close-modal');
   const modalEmpAvatar = document.getElementById('modal-emp-avatar');
@@ -63,6 +70,35 @@ document.addEventListener('DOMContentLoaded', () => {
   const modalSummaryTbody = document.getElementById('modal-summary-tbody');
   const modalPunchesTbody = document.getElementById('modal-punches-tbody');
   const modalTabs = document.querySelectorAll('.modal-tab');
+
+  // Device admin elements
+  const devicesTbody = document.getElementById('devices-tbody');
+  const deviceSearchInput = document.getElementById('device-search-input');
+  const deviceModal = document.getElementById('device-modal');
+  const deviceModalTitle = document.getElementById('device-modal-title');
+  const deviceFormSn = document.getElementById('device-form-sn');
+  const deviceFormAlias = document.getElementById('device-form-alias');
+  const deviceFormIp = document.getElementById('device-form-ip');
+  const deviceFormModel = document.getElementById('device-form-model');
+  const deviceFormLocation = document.getElementById('device-form-location');
+  const deviceFormStatus = document.getElementById('device-form-status');
+
+  // User admin elements
+  const usersAdminTbody = document.getElementById('users-admin-tbody');
+  const useradminSearchInput = document.getElementById('useradmin-search-input');
+  const useradminDeptFilter = document.getElementById('useradmin-dept-filter');
+  const userModal = document.getElementById('user-modal');
+  const userModalTitle = document.getElementById('user-modal-title');
+  const userFormId = document.getElementById('user-form-id');
+  const userFormBadge = document.getElementById('user-form-badge');
+  const userFormName = document.getElementById('user-form-name');
+  const userFormDept = document.getElementById('user-form-dept');
+  const userFormGender = document.getElementById('user-form-gender');
+
+  // Shared delete confirm modal
+  const confirmDeleteModal = document.getElementById('confirm-delete-modal');
+  const confirmDeleteTitle = document.getElementById('confirm-delete-title');
+  const confirmDeleteMessage = document.getElementById('confirm-delete-message');
 
   // 1. Live Clock
   function updateLiveClock() {
@@ -74,10 +110,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 2. Navigation Switching
   const titles = {
-    dashboard: { title: 'Attendance Dashboard', subtitle: 'Real-time personnel clock-in/out overview' },
-    employees: { title: 'Personnel Directory', subtitle: 'Search and inspect personnel attendance profiles' },
-    punches: { title: 'Punch Activity Log', subtitle: 'Chronological raw audit trail of biometric logs' },
-    reports: { title: 'Attendance Reports', subtitle: 'Daily paired shifts, hours worked, and CSV export' }
+    dashboard:    { title: 'Attendance Dashboard',    subtitle: 'Real-time personnel clock-in/out overview' },
+    employees:    { title: 'Personnel Directory',     subtitle: 'Search and inspect personnel attendance profiles' },
+    punches:      { title: 'Punch Activity Log',      subtitle: 'Chronological raw audit trail of biometric logs' },
+    reports:      { title: 'Attendance Reports',      subtitle: 'Daily paired shifts, hours worked, and CSV export' },
+    devices:      { title: 'Clock Devices',           subtitle: 'Manage biometric clock readers — add, edit, remove devices' },
+    'users-admin': { title: 'Users Administration', subtitle: 'Create, edit and remove personnel from the system' },
   };
 
   navButtons.forEach(btn => {
@@ -93,9 +131,11 @@ document.addEventListener('DOMContentLoaded', () => {
       pageSubtitleEl.textContent = titles[target].subtitle;
       currentTab = target;
 
-      if (target === 'dashboard') loadDashboard();
-      if (target === 'employees') loadEmployees();
-      if (target === 'punches') loadPunches();
+      if (target === 'dashboard')    loadDashboard();
+      if (target === 'employees')    loadEmployees();
+      if (target === 'punches')      loadPunches();
+      if (target === 'devices')      loadDevices();
+      if (target === 'users-admin')  loadUsersAdmin();
     });
   });
 
@@ -168,19 +208,19 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // 5. Load Departments
+  // 5. Load Departments (also populates admin selects)
   async function loadDepartments() {
     try {
       const res = await fetch('/api/departments');
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (Array.isArray(data)) {
         departments = data;
         const options = departments.map(d => `<option value="${d.dept_id}">${escapeHtml(d.dept_name)}</option>`).join('');
         empDeptFilter.innerHTML = '<option value="">All Departments</option>' + options;
         reportDept.innerHTML = '<option value="">All Departments</option>' + options;
+        useradminDeptFilter.innerHTML = '<option value="">All Departments</option>' + options;
+        userFormDept.innerHTML = '<option value="">No Department</option>' + options;
       }
     } catch (e) {
       console.warn('Departments not available yet (database may need initialization):', e.message);
@@ -510,6 +550,403 @@ document.addEventListener('DOMContentLoaded', () => {
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // DEVICE ADMINISTRATION
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** Fetch devices and render table; client-side filter applied on search */
+  async function loadDevices() {
+    devicesTbody.innerHTML = '<tr><td colspan="8" class="table-empty">Loading devices...</td></tr>';
+    try {
+      const res = await fetch('/api/devices');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      allDevices = await res.json();
+      renderDevices(allDevices);
+    } catch (e) {
+      devicesTbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error loading devices: ${escapeHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function renderDevices(list) {
+    const q = deviceSearchInput.value.trim().toLowerCase();
+    const filtered = q
+      ? list.filter(d =>
+          (d.sn || '').toLowerCase().includes(q) ||
+          (d.alias || '').toLowerCase().includes(q) ||
+          (d.ip_address || '').toLowerCase().includes(q) ||
+          (d.location || '').toLowerCase().includes(q)
+        )
+      : list;
+
+    if (filtered.length === 0) {
+      devicesTbody.innerHTML = '<tr><td colspan="8" class="table-empty">No devices found</td></tr>';
+      return;
+    }
+
+    devicesTbody.innerHTML = filtered.map(d => `
+      <tr>
+        <td><span class="badge-number font-mono">${escapeHtml(d.sn)}</span></td>
+        <td><strong>${escapeHtml(d.alias || '—')}</strong></td>
+        <td><span class="font-mono" style="color:var(--accent-cyan)">${escapeHtml(d.ip_address || '—')}</span></td>
+        <td style="color:var(--text-secondary)">${escapeHtml(d.location || '—')}</td>
+        <td style="color:var(--text-muted); font-size:0.82rem">${escapeHtml(d.model || '—')}</td>
+        <td><span class="device-status-badge ${d.status}">${d.status === 'active' ? '● Active' : '○ Inactive'}</span></td>
+        <td><span class="punch-count-pill">${Number(d.punch_count).toLocaleString()}</span></td>
+        <td>
+          <div class="table-actions">
+            <button class="btn-icon edit" data-id="${d.id}" title="Edit device">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            </button>
+            <button class="btn-icon delete" data-id="${d.id}" data-sn="${escapeHtml(d.sn)}" data-alias="${escapeHtml(d.alias || d.sn)}" title="Delete device">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+            </button>
+          </div>
+        </td>
+      </tr>
+    `).join('');
+
+    // Wire action buttons
+    devicesTbody.querySelectorAll('.btn-icon.edit').forEach(btn => {
+      btn.addEventListener('click', () => openDeviceModal(parseInt(btn.dataset.id, 10)));
+    });
+    devicesTbody.querySelectorAll('.btn-icon.delete').forEach(btn => {
+      btn.addEventListener('click', () => {
+        openDeleteConfirm(
+          'Delete Device',
+          `Are you sure you want to remove device <strong>${escapeHtml(btn.dataset.alias)}</strong> (SN: <code>${escapeHtml(btn.dataset.sn)}</code>) from the registry?`,
+          () => deleteDevice(parseInt(btn.dataset.id, 10))
+        );
+      });
+    });
+  }
+
+  /** Opens the device modal in add (id=null) or edit (id=number) mode */
+  async function openDeviceModal(id = null) {
+    deviceEditId = id;
+    deviceFormSn.value = '';
+    deviceFormAlias.value = '';
+    deviceFormIp.value = '';
+    deviceFormModel.value = '';
+    deviceFormLocation.value = '';
+    deviceFormStatus.value = 'active';
+
+    if (id !== null) {
+      deviceModalTitle.textContent = 'Edit Device';
+      document.getElementById('btn-save-device').textContent = 'Update Device';
+      try {
+        const res = await fetch(`/api/devices/${id}`);
+        if (!res.ok) throw new Error('Device not found');
+        const d = await res.json();
+        deviceFormSn.value = d.sn || '';
+        deviceFormAlias.value = d.alias || '';
+        deviceFormIp.value = d.ip_address || '';
+        deviceFormModel.value = d.model || '';
+        deviceFormLocation.value = d.location || '';
+        deviceFormStatus.value = d.status || 'active';
+      } catch (e) {
+        showToast(`Failed to load device: ${e.message}`, 'error');
+        return;
+      }
+    } else {
+      deviceModalTitle.textContent = 'Add Device';
+      document.getElementById('btn-save-device').textContent = 'Save Device';
+    }
+
+    deviceModal.style.display = 'flex';
+    deviceFormSn.focus();
+  }
+
+  function closeDeviceModal() { deviceModal.style.display = 'none'; }
+
+  async function saveDevice() {
+    const sn = deviceFormSn.value.trim();
+    if (!sn) { showToast('Serial Number (SN) is required', 'error'); deviceFormSn.focus(); return; }
+
+    const payload = {
+      sn,
+      alias: deviceFormAlias.value.trim() || null,
+      ip_address: deviceFormIp.value.trim() || null,
+      model: deviceFormModel.value.trim() || null,
+      location: deviceFormLocation.value.trim() || null,
+      status: deviceFormStatus.value,
+    };
+
+    const isEdit = deviceEditId !== null;
+    const url = isEdit ? `/api/devices/${deviceEditId}` : '/api/devices';
+    const method = isEdit ? 'PUT' : 'POST';
+
+    const btn = document.getElementById('btn-save-device');
+    btn.disabled = true;
+    btn.textContent = isEdit ? 'Updating...' : 'Saving...';
+
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Request failed');
+
+      showToast(isEdit ? 'Device updated successfully' : 'Device added successfully', 'success');
+      closeDeviceModal();
+      loadDevices();
+    } catch (e) {
+      showToast(e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = isEdit ? 'Update Device' : 'Save Device';
+    }
+  }
+
+  async function deleteDevice(id) {
+    try {
+      const res = await fetch(`/api/devices/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Delete failed');
+      showToast('Device deleted', 'success');
+      loadDevices();
+    } catch (e) {
+      showToast(e.message, 'error');
+    }
+  }
+
+  // Device event listeners
+  document.getElementById('btn-add-device').addEventListener('click', () => openDeviceModal(null));
+  document.getElementById('btn-close-device-modal').addEventListener('click', closeDeviceModal);
+  document.getElementById('btn-cancel-device').addEventListener('click', closeDeviceModal);
+  deviceModal.addEventListener('click', e => { if (e.target === deviceModal) closeDeviceModal(); });
+  document.getElementById('btn-save-device').addEventListener('click', saveDevice);
+
+  // Import devices from existing punch data
+  document.getElementById('btn-import-devices').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-import-devices');
+    btn.disabled = true;
+    btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin 1s linear infinite"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Importing...`;
+    try {
+      const res = await fetch('/api/devices/import-from-punches', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Import failed');
+      showToast(data.message, data.imported > 0 ? 'success' : 'info');
+      loadDevices();
+    } catch (e) {
+      showToast(`Import error: ${e.message}`, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Import from Punch Data`;
+    }
+  });
+
+  // Device search (client-side, no extra fetch)
+  let deviceSearchTimeout = null;
+  deviceSearchInput.addEventListener('input', () => {
+    clearTimeout(deviceSearchTimeout);
+    deviceSearchTimeout = setTimeout(() => renderDevices(allDevices), 250);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // USERS ADMINISTRATION
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async function loadUsersAdmin() {
+    usersAdminTbody.innerHTML = '<tr><td colspan="7" class="table-empty">Loading users...</td></tr>';
+    try {
+      const params = new URLSearchParams();
+      const search = useradminSearchInput.value.trim();
+      const deptId = useradminDeptFilter.value;
+      if (search) params.append('search', search);
+      if (deptId) params.append('dept_id', deptId);
+
+      const res = await fetch(`/api/admin/users?${params.toString()}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      allUsersAdmin = await res.json();
+      renderUsersAdmin(allUsersAdmin);
+    } catch (e) {
+      usersAdminTbody.innerHTML = `<tr><td colspan="7" class="table-empty">Error loading users: ${escapeHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function renderUsersAdmin(list) {
+    if (list.length === 0) {
+      usersAdminTbody.innerHTML = '<tr><td colspan="7" class="table-empty">No users found</td></tr>';
+      return;
+    }
+
+    usersAdminTbody.innerHTML = list.map(u => `
+      <tr>
+        <td><span class="badge-number font-mono">${u.user_id}</span></td>
+        <td><span class="badge-number font-mono">${escapeHtml(u.badge_number || '—')}</span></td>
+        <td>
+          <div style="display:flex;align-items:center;gap:10px">
+            <div class="avatar avatar-sm">${(u.name || '?').charAt(0)}</div>
+            <strong>${escapeHtml(u.name)}</strong>
+          </div>
+        </td>
+        <td style="color:var(--text-secondary)">${escapeHtml(u.dept_name || '—')}</td>
+        <td style="color:var(--text-muted);font-size:0.82rem">${escapeHtml(u.gender || '—')}</td>
+        <td><span class="punch-count-pill">${Number(u.punch_count).toLocaleString()}</span></td>
+        <td>
+          <div class="table-actions">
+            <button class="btn-icon edit" data-id="${u.user_id}" title="Edit user">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            </button>
+            <button class="btn-icon delete" data-id="${u.user_id}" data-name="${escapeHtml(u.name)}" title="Delete user">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+            </button>
+          </div>
+        </td>
+      </tr>
+    `).join('');
+
+    usersAdminTbody.querySelectorAll('.btn-icon.edit').forEach(btn => {
+      btn.addEventListener('click', () => openUserModal(parseInt(btn.dataset.id, 10)));
+    });
+    usersAdminTbody.querySelectorAll('.btn-icon.delete').forEach(btn => {
+      btn.addEventListener('click', () => {
+        openDeleteConfirm(
+          'Delete User',
+          `Are you sure you want to permanently delete <strong>${escapeHtml(btn.dataset.name)}</strong>?<br>All their punch records will also be deleted.`,
+          () => deleteUser(parseInt(btn.dataset.id, 10))
+        );
+      });
+    });
+  }
+
+  /** Opens user modal; id=null → add mode, id=number → edit mode */
+  async function openUserModal(id = null) {
+    userEditId = id;
+    userFormId.value = '';
+    userFormBadge.value = '';
+    userFormName.value = '';
+    userFormDept.value = '';
+    userFormGender.value = '';
+
+    if (id !== null) {
+      userModalTitle.textContent = 'Edit User';
+      document.getElementById('btn-save-user').textContent = 'Update User';
+      userFormId.disabled = true; // can't change user_id (PK)
+      const u = allUsersAdmin.find(x => x.user_id === id);
+      if (u) {
+        userFormId.value = u.user_id;
+        userFormBadge.value = u.badge_number || '';
+        userFormName.value = u.name || '';
+        userFormDept.value = u.dept_id || '';
+        userFormGender.value = u.gender || '';
+      }
+    } else {
+      userModalTitle.textContent = 'Add User';
+      document.getElementById('btn-save-user').textContent = 'Save User';
+      userFormId.disabled = false;
+    }
+
+    userModal.style.display = 'flex';
+    (id !== null ? userFormName : userFormId).focus();
+  }
+
+  function closeUserModal() { userModal.style.display = 'none'; }
+
+  async function saveUser() {
+    const name = userFormName.value.trim();
+    if (!name) { showToast('Full name is required', 'error'); userFormName.focus(); return; }
+
+    const isEdit = userEditId !== null;
+
+    if (!isEdit) {
+      const uid = parseInt(userFormId.value, 10);
+      if (!userFormId.value || isNaN(uid) || uid <= 0) {
+        showToast('A valid positive User ID is required', 'error'); userFormId.focus(); return;
+      }
+    }
+
+    const payload = {
+      badge_number: userFormBadge.value.trim() || null,
+      name,
+      gender: userFormGender.value || null,
+      dept_id: userFormDept.value ? parseInt(userFormDept.value, 10) : null,
+    };
+    if (!isEdit) payload.user_id = parseInt(userFormId.value, 10);
+
+    const url = isEdit ? `/api/employees/${userEditId}` : '/api/employees';
+    const method = isEdit ? 'PUT' : 'POST';
+
+    const btn = document.getElementById('btn-save-user');
+    btn.disabled = true;
+    btn.textContent = isEdit ? 'Updating...' : 'Saving...';
+
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Request failed');
+
+      showToast(isEdit ? 'User updated successfully' : 'User created successfully', 'success');
+      closeUserModal();
+      loadUsersAdmin();
+      loadDepartments(); // refresh dept counts
+    } catch (e) {
+      showToast(e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = isEdit ? 'Update User' : 'Save User';
+    }
+  }
+
+  async function deleteUser(id) {
+    try {
+      const res = await fetch(`/api/employees/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Delete failed');
+      showToast('User deleted', 'success');
+      loadUsersAdmin();
+    } catch (e) {
+      showToast(e.message, 'error');
+    }
+  }
+
+  // User admin event listeners
+  document.getElementById('btn-add-user').addEventListener('click', () => openUserModal(null));
+  document.getElementById('btn-close-user-modal').addEventListener('click', closeUserModal);
+  document.getElementById('btn-cancel-user').addEventListener('click', closeUserModal);
+  userModal.addEventListener('click', e => { if (e.target === userModal) closeUserModal(); });
+  document.getElementById('btn-save-user').addEventListener('click', saveUser);
+
+  // User search/filter (server-side)
+  let useradminSearchTimeout = null;
+  useradminSearchInput.addEventListener('input', () => {
+    clearTimeout(useradminSearchTimeout);
+    useradminSearchTimeout = setTimeout(loadUsersAdmin, 300);
+  });
+  useradminDeptFilter.addEventListener('change', loadUsersAdmin);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // SHARED DELETE CONFIRM MODAL
+  // ─────────────────────────────────────────────────────────────────────────
+
+  function openDeleteConfirm(title, message, onConfirm) {
+    confirmDeleteTitle.textContent = title;
+    confirmDeleteMessage.innerHTML = message;
+    deletePendingFn = onConfirm;
+    confirmDeleteModal.style.display = 'flex';
+  }
+
+  function closeDeleteConfirm() {
+    confirmDeleteModal.style.display = 'none';
+    deletePendingFn = null;
+  }
+
+  document.getElementById('btn-close-confirm').addEventListener('click', closeDeleteConfirm);
+  document.getElementById('btn-cancel-delete').addEventListener('click', closeDeleteConfirm);
+  confirmDeleteModal.addEventListener('click', e => { if (e.target === confirmDeleteModal) closeDeleteConfirm(); });
+  document.getElementById('btn-confirm-delete').addEventListener('click', async () => {
+    if (deletePendingFn) {
+      closeDeleteConfirm();
+      await deletePendingFn();
+    }
+  });
 
   // Initial Boot
   checkBridgeStatus();

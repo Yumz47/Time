@@ -11,8 +11,69 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body class="dark-theme">
+  <!-- ══ AUTHENTICATION OVERLAY ══ -->
+  <div id="login-screen" class="login-overlay">
+    <div class="login-card">
+      <div class="login-brand">
+        <div class="brand-icon lg">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="12 6 12 12 16 14"></polyline>
+          </svg>
+        </div>
+        <div class="login-brand-info">
+          <h2>TimePulse</h2>
+          <span class="brand-subtext">Supreme Court / General Registry</span>
+        </div>
+      </div>
+      
+      <div class="login-headline">
+        <h3>Sign In</h3>
+        <p>Access attendance records, live monitoring, and schedules</p>
+      </div>
+
+      <form id="login-form" autocomplete="off">
+        <div class="form-group">
+          <label for="login-username">Username</label>
+          <div class="input-with-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+            <input type="text" id="login-username" placeholder="Username" required autofocus>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="login-password">Password</label>
+          <div class="input-with-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+            <input type="password" id="login-password" placeholder="••••••••" required>
+          </div>
+        </div>
+
+        <div id="login-error-msg" class="login-error" style="display:none;"></div>
+
+        <button type="submit" id="btn-login-submit" class="btn-primary btn-block">
+          <span>Sign In</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+        </button>
+      </form>
+
+      <div class="login-presets">
+        <span class="preset-label">Quick Logins:</span>
+        <div class="preset-buttons">
+          <button type="button" class="btn-preset" id="btn-preset-admin">
+            <strong>Admin</strong>
+            <small>Full Access</small>
+          </button>
+          <button type="button" class="btn-preset" id="btn-preset-viewer">
+            <strong>Viewer</strong>
+            <small>View Only</small>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- App Container -->
-  <div class="app-layout">
+  <div class="app-layout" id="app-layout" style="display: none;">
     <!-- Sidebar Navigation -->
     <aside class="sidebar">
       <div class="brand-container">
@@ -29,7 +90,19 @@
       </div>
 
       <nav class="nav-menu">
-        <button class="nav-item active" id="nav-dashboard" data-tab="dashboard">
+        <div class="nav-section-label">Operations</div>
+
+        <button class="nav-item active" id="nav-live-board" data-tab="live-board">
+          <span class="live-dot-pulse"></span>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="9"></circle>
+            <polyline points="12 7 12 12 15 15"></polyline>
+          </svg>
+          <span>Live Board</span>
+          <span class="nav-pill-live">LIVE</span>
+        </button>
+
+        <button class="nav-item" id="nav-dashboard" data-tab="dashboard">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="3" y="3" width="7" height="7"></rect>
             <rect x="14" y="3" width="7" height="7"></rect>
@@ -38,6 +111,7 @@
           </svg>
           <span>Dashboard</span>
         </button>
+
         <button class="nav-item" id="nav-employees" data-tab="employees">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
@@ -47,21 +121,66 @@
           </svg>
           <span>Personnel</span>
         </button>
+
         <button class="nav-item" id="nav-punches" data-tab="punches">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
           </svg>
           <span>Punch Log</span>
         </button>
+
+        <div class="nav-section-label">Scheduling & Leave</div>
+
+        <button class="nav-item" id="nav-shifts" data-tab="shifts">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
+            <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
+          </svg>
+          <span>Shifts & Schedules</span>
+        </button>
+
+        <button class="nav-item" id="nav-leaves" data-tab="leaves">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="16" y1="2" x2="16" y2="6"></line>
+            <line x1="8" y1="2" x2="8" y2="6"></line>
+            <line x1="3" y1="10" x2="21" y2="10"></line>
+          </svg>
+          <span>Leave Requests</span>
+        </button>
+
+        <button class="nav-item" id="nav-holidays" data-tab="holidays">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"></path>
+          </svg>
+          <span>Holiday Calendar</span>
+        </button>
+
+        <button class="nav-item" id="nav-corrections" data-tab="corrections">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+          </svg>
+          <span>Punch Corrections</span>
+        </button>
+
+        <div class="nav-section-label">Intelligence & Reports</div>
+
+        <button class="nav-item" id="nav-smart-reports" data-tab="smart-reports">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="20" x2="18" y2="10"></line>
+            <line x1="12" y1="20" x2="12" y2="4"></line>
+            <line x1="6" y1="20" x2="6" y2="14"></line>
+          </svg>
+          <span>Smart Reports</span>
+        </button>
+
         <button class="nav-item" id="nav-reports" data-tab="reports">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
             <polyline points="14 2 14 8 20 8"></polyline>
-            <line x1="16" y1="13" x2="8" y2="13"></line>
-            <line x1="16" y1="17" x2="8" y2="17"></line>
-            <polyline points="10 9 9 9 8 9"></polyline>
           </svg>
-          <span>Reports</span>
+          <span>Paired Shifts</span>
         </button>
 
         <div class="nav-section-label">Administration</div>
@@ -72,21 +191,39 @@
             <line x1="8" y1="21" x2="16" y2="21"></line>
             <line x1="12" y1="17" x2="12" y2="21"></line>
           </svg>
-          <span>Devices</span>
+          <span>Clock Devices</span>
         </button>
 
         <button class="nav-item" id="nav-users-admin" data-tab="users-admin">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
             <circle cx="12" cy="7" r="4"></circle>
-            <line x1="18" y1="8" x2="23" y2="13"></line>
-            <line x1="23" y1="8" x2="18" y2="13"></line>
           </svg>
-          <span>Users Admin</span>
+          <span>Personnel Admin</span>
+        </button>
+
+        <button class="nav-item admin-only" id="nav-app-users" data-tab="app-users">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
+          <span>System Users</span>
         </button>
       </nav>
 
       <div class="sidebar-footer">
+        <!-- User Session Card -->
+        <div class="user-session-card" id="user-session-card">
+          <div class="user-session-avatar" id="user-session-avatar">AD</div>
+          <div class="user-session-details">
+            <span class="user-session-name" id="user-session-name">Administrator</span>
+            <span class="user-session-role" id="user-session-role">ADMIN</span>
+          </div>
+          <button class="btn-logout" id="btn-logout" title="Sign Out">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+          </button>
+        </div>
+
         <div class="bridge-status-card">
           <div class="bridge-header">
             <span class="status-indicator online" id="bridge-indicator"></span>
@@ -122,8 +259,97 @@
 
       <!-- Content Views -->
       <div class="content-wrapper">
+        <!-- 0. LIVE ATTENDANCE BOARD VIEW -->
+        <section class="tab-view active" id="view-live-board">
+          <!-- Live Toolbar & Filters -->
+          <div class="live-toolbar">
+            <div class="live-toolbar-left">
+              <div class="form-group-inline">
+                <label for="live-date-input">Target Date:</label>
+                <input type="date" id="live-date-input" class="filter-input">
+              </div>
+              <div class="form-group-inline">
+                <label for="live-dept-filter">Department:</label>
+                <select id="live-dept-filter" class="filter-input">
+                  <option value="">All Departments</option>
+                </select>
+              </div>
+              <div class="search-box">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                <input type="text" id="live-search-input" placeholder="Search employee or badge...">
+              </div>
+            </div>
+            <div class="live-toolbar-right">
+              <button class="btn-refresh" id="btn-refresh-live" title="Refresh Live Data">
+                <svg id="live-refresh-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+                <span>Refresh</span>
+              </button>
+              <div class="live-status-badge">
+                <span class="live-dot-pulse"></span>
+                <span id="live-timer-label">Auto 60s</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Live KPI Row -->
+          <div class="kpi-grid live-kpi-grid">
+            <div class="kpi-card">
+              <div class="kpi-icon icon-users">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              </div>
+              <div class="kpi-info">
+                <span class="kpi-label">Total Personnel</span>
+                <span class="kpi-value" id="live-kpi-total">--</span>
+              </div>
+            </div>
+
+            <div class="kpi-card accent-emerald">
+              <div class="kpi-icon icon-in">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+              </div>
+              <div class="kpi-info">
+                <span class="kpi-label">Currently IN</span>
+                <span class="kpi-value" id="live-kpi-in">--</span>
+              </div>
+            </div>
+
+            <div class="kpi-card accent-amber">
+              <div class="kpi-icon icon-out">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+              </div>
+              <div class="kpi-info">
+                <span class="kpi-label">Currently OUT</span>
+                <span class="kpi-value" id="live-kpi-out">--</span>
+              </div>
+            </div>
+
+            <div class="kpi-card accent-rose">
+              <div class="kpi-icon icon-absent">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+              </div>
+              <div class="kpi-info">
+                <span class="kpi-label">Absent / No Punch</span>
+                <span class="kpi-value" id="live-kpi-absent">--</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Status Filter Tabs -->
+          <div class="filter-pills-row">
+            <button class="filter-pill active" data-live-filter="all">All Personnel (<span id="count-all">0</span>)</button>
+            <button class="filter-pill" data-live-filter="in">Present / In (<span id="count-in">0</span>)</button>
+            <button class="filter-pill" data-live-filter="out">Clocked Out (<span id="count-out">0</span>)</button>
+            <button class="filter-pill" data-live-filter="absent">Absent (<span id="count-absent">0</span>)</button>
+          </div>
+
+          <!-- Personnel Live Grid -->
+          <div class="live-board-grid" id="live-board-grid">
+            <div class="grid-loading">Loading live board...</div>
+          </div>
+        </section>
+
         <!-- 1. DASHBOARD VIEW -->
-        <section class="tab-view active" id="view-dashboard">
+        <section class="tab-view" id="view-dashboard">
           <!-- KPI Metrics Row -->
           <div class="kpi-grid">
             <div class="kpi-card">
@@ -382,6 +608,234 @@
               </tbody>
             </table>
           </div>
+        <!-- 7. SMART REPORTS VIEW -->
+        <section class="tab-view" id="view-smart-reports">
+          <!-- Report Type Sub-tabs -->
+          <div class="subtabs-bar">
+            <button class="subtab-btn active" data-report-type="summary">Attendance Summary</button>
+            <button class="subtab-btn" data-report-type="late">Late Arrivals</button>
+            <button class="subtab-btn" data-report-type="absent">Absentees</button>
+            <button class="subtab-btn" data-report-type="overtime">Overtime</button>
+            <button class="subtab-btn" data-report-type="device">Device Activity</button>
+          </div>
+
+          <!-- Report Filter Toolbar -->
+          <div class="filter-card">
+            <div class="filter-group-inline" id="smart-daterange-group">
+              <div class="form-group-inline">
+                <label for="smart-from-date">From:</label>
+                <input type="date" id="smart-from-date" class="filter-input">
+              </div>
+              <div class="form-group-inline" id="smart-to-container">
+                <label for="smart-to-date">To:</label>
+                <input type="date" id="smart-to-date" class="filter-input">
+              </div>
+            </div>
+
+            <div class="form-group-inline">
+              <label for="smart-dept-filter">Department:</label>
+              <select id="smart-dept-filter" class="filter-input">
+                <option value="">All Departments</option>
+              </select>
+            </div>
+
+            <div class="form-group-inline" id="smart-threshold-container" style="display: none;">
+              <label for="smart-threshold-input" id="smart-threshold-label">Threshold Time:</label>
+              <input type="time" id="smart-threshold-input" class="filter-input" value="08:15">
+            </div>
+
+            <div class="filter-actions-inline">
+              <button class="btn-primary" id="btn-run-smart-report">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                <span>Run Report</span>
+              </button>
+              <button class="btn-secondary" id="btn-export-smart-csv">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                <span>Export CSV</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Report Dynamic Container -->
+          <div class="table-container" id="smart-report-container">
+            <table class="glass-table" id="smart-report-table">
+              <thead id="smart-report-thead"></thead>
+              <tbody id="smart-report-tbody">
+                <tr><td colspan="6" class="table-empty">Select criteria and click Run Report</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- 8. SHIFTS & SCHEDULES VIEW -->
+        <section class="tab-view" id="view-shifts">
+          <div class="section-block">
+            <div class="section-header-row">
+              <div>
+                <h2 class="section-title">Standard Shift Classes</h2>
+                <p class="section-subtitle">Configured daily working hours, check-in and check-out windows</p>
+              </div>
+            </div>
+            <div class="shifts-grid" id="shifts-grid">
+              <div class="grid-loading">Loading shifts...</div>
+            </div>
+          </div>
+
+          <div class="section-block" style="margin-top: 32px;">
+            <div class="section-header-row">
+              <div>
+                <h2 class="section-title">Schedules & Assignments</h2>
+                <p class="section-subtitle">Active rotating and fixed department schedules</p>
+              </div>
+            </div>
+            <div class="schedules-grid" id="schedules-grid">
+              <div class="grid-loading">Loading schedules...</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 9. LEAVE REQUESTS VIEW -->
+        <section class="tab-view" id="view-leaves">
+          <div class="toolbar-row">
+            <div class="toolbar-filters">
+              <div class="form-group-inline">
+                <label for="leave-status-filter">Status:</label>
+                <select id="leave-status-filter" class="filter-input">
+                  <option value="">All Statuses</option>
+                  <option value="pending">Pending</option>
+                  <option value="approved">Approved</option>
+                  <option value="rejected">Rejected</option>
+                </select>
+              </div>
+              <div class="form-group-inline">
+                <label for="leave-type-filter">Type:</label>
+                <select id="leave-type-filter" class="filter-input">
+                  <option value="">All Types</option>
+                </select>
+              </div>
+            </div>
+            <button class="btn-primary" id="btn-open-leave-modal">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              <span>Request / Log Leave</span>
+            </button>
+          </div>
+
+          <div class="table-container">
+            <table class="glass-table">
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Department</th>
+                  <th>Leave Type</th>
+                  <th>Date Range</th>
+                  <th>Duration</th>
+                  <th>Notes</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="leaves-tbody">
+                <tr><td colspan="8" class="table-empty">Loading leaves...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- 10. HOLIDAY CALENDAR VIEW -->
+        <section class="tab-view" id="view-holidays">
+          <div class="toolbar-row">
+            <div class="toolbar-filters">
+              <div class="form-group-inline">
+                <label for="holiday-year-filter">Year:</label>
+                <select id="holiday-year-filter" class="filter-input">
+                  <option value="2026" selected>2026</option>
+                  <option value="2025">2025</option>
+                  <option value="all">All Years</option>
+                </select>
+              </div>
+            </div>
+            <button class="btn-primary admin-only" id="btn-open-holiday-modal">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              <span>Add Holiday</span>
+            </button>
+          </div>
+
+          <div class="holidays-grid" id="holidays-grid">
+            <div class="grid-loading">Loading holidays...</div>
+          </div>
+        </section>
+
+        <!-- 11. PUNCH CORRECTIONS VIEW -->
+        <section class="tab-view" id="view-corrections">
+          <div class="toolbar-row">
+            <div class="toolbar-filters">
+              <div class="form-group-inline">
+                <label for="corr-from-date">From:</label>
+                <input type="date" id="corr-from-date" class="filter-input">
+              </div>
+              <div class="form-group-inline">
+                <label for="corr-to-date">To:</label>
+                <input type="date" id="corr-to-date" class="filter-input">
+              </div>
+              <button class="btn-secondary" id="btn-filter-corrections">Filter</button>
+            </div>
+            <button class="btn-primary admin-only" id="btn-open-correction-modal">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              <span>Add Punch Correction</span>
+            </button>
+          </div>
+
+          <div class="table-container">
+            <table class="glass-table">
+              <thead>
+                <tr>
+                  <th>Punch Time</th>
+                  <th>Employee</th>
+                  <th>Type</th>
+                  <th>Reason (YUYIN)</th>
+                  <th>Logged By</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="corrections-tbody">
+                <tr><td colspan="7" class="table-empty">Loading punch corrections...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- 12. APP USERS VIEW (ADMIN ONLY) -->
+        <section class="tab-view" id="view-app-users">
+          <div class="toolbar-row">
+            <div class="search-box">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+              <input type="text" id="appuser-search-input" placeholder="Search username or name...">
+            </div>
+            <button class="btn-primary" id="btn-open-appuser-modal">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              <span>Add System User</span>
+            </button>
+          </div>
+
+          <div class="table-container">
+            <table class="glass-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Username</th>
+                  <th>Full Name</th>
+                  <th>Role</th>
+                  <th>Status</th>
+                  <th>Created At</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="app-users-tbody">
+                <tr><td colspan="7" class="table-empty">Loading system users...</td></tr>
+              </tbody>
+            </table>
+          </div>
         </section>
 
       </div>
@@ -568,6 +1022,205 @@
       <div class="modal-footer">
         <button class="btn-secondary" id="btn-cancel-delete">Cancel</button>
         <button class="btn-danger" id="btn-confirm-delete">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ LEAVE REQUEST MODAL ══ -->
+  <div class="modal-backdrop" id="leave-modal" style="display:none;">
+    <div class="modal-card modal-form-card">
+      <div class="modal-header">
+        <div class="modal-profile">
+          <div class="modal-icon-badge icon-leave">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+          </div>
+          <div>
+            <h3 id="leave-modal-title">Request Leave</h3>
+            <span class="modal-subtext">Personnel leave record</span>
+          </div>
+        </div>
+        <button class="btn-close" id="btn-close-leave-modal">&times;</button>
+      </div>
+      <div class="modal-body form-modal-body">
+        <div class="form-group">
+          <label for="leave-form-emp">Employee <span class="req">*</span></label>
+          <select id="leave-form-emp">
+            <option value="">Select Employee...</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="leave-form-type">Leave Type <span class="req">*</span></label>
+            <select id="leave-form-type">
+              <option value="">Select Type...</option>
+            </select>
+          </div>
+          <div class="form-group" id="leave-status-group">
+            <label for="leave-form-status">Initial Status</label>
+            <select id="leave-form-status">
+              <option value="approved">Approved (Admin)</option>
+              <option value="pending">Pending</option>
+              <option value="rejected">Rejected</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="leave-form-start">Start Date <span class="req">*</span></label>
+            <input type="date" id="leave-form-start">
+          </div>
+          <div class="form-group">
+            <label for="leave-form-end">End Date <span class="req">*</span></label>
+            <input type="date" id="leave-form-end">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="leave-form-notes">Reason / Notes</label>
+          <textarea id="leave-form-notes" rows="2" placeholder="e.g. Annual vacation, medical certificate submitted..."></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" id="btn-cancel-leave">Cancel</button>
+        <button class="btn-primary" id="btn-save-leave">Submit Leave</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ HOLIDAY MODAL ══ -->
+  <div class="modal-backdrop" id="holiday-modal" style="display:none;">
+    <div class="modal-card modal-card-sm">
+      <div class="modal-header">
+        <div class="modal-profile">
+          <div class="modal-icon-badge icon-holiday">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"></path></svg>
+          </div>
+          <div>
+            <h3 id="holiday-modal-title">Add Official Holiday</h3>
+            <span class="modal-subtext">Calendar exception entry</span>
+          </div>
+        </div>
+        <button class="btn-close" id="btn-close-holiday-modal">&times;</button>
+      </div>
+      <div class="modal-body form-modal-body">
+        <div class="form-group">
+          <label for="holiday-form-name">Holiday Name <span class="req">*</span></label>
+          <input type="text" id="holiday-form-name" placeholder="e.g. Independence Day">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="holiday-form-date">Date <span class="req">*</span></label>
+            <input type="date" id="holiday-form-date">
+          </div>
+          <div class="form-group">
+            <label for="holiday-form-duration">Duration (Days)</label>
+            <input type="number" id="holiday-form-duration" value="1" min="1">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" id="btn-cancel-holiday">Cancel</button>
+        <button class="btn-primary" id="btn-save-holiday">Save Holiday</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ PUNCH CORRECTION MODAL ══ -->
+  <div class="modal-backdrop" id="correction-modal" style="display:none;">
+    <div class="modal-card modal-form-card">
+      <div class="modal-header">
+        <div class="modal-profile">
+          <div class="modal-icon-badge icon-corr">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+          </div>
+          <div>
+            <h3 id="corr-modal-title">Record Punch Correction</h3>
+            <span class="modal-subtext">Manual audit trail entry</span>
+          </div>
+        </div>
+        <button class="btn-close" id="btn-close-corr-modal">&times;</button>
+      </div>
+      <div class="modal-body form-modal-body">
+        <div class="form-group">
+          <label for="corr-form-emp">Employee <span class="req">*</span></label>
+          <select id="corr-form-emp">
+            <option value="">Select Employee...</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="corr-form-time">Punch Date & Time <span class="req">*</span></label>
+            <input type="datetime-local" id="corr-form-time">
+          </div>
+          <div class="form-group">
+            <label for="corr-form-type">Action Type <span class="req">*</span></label>
+            <select id="corr-form-type">
+              <option value="in">Check In</option>
+              <option value="out">Check Out</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="corr-form-reason">Reason for Correction <span class="req">*</span></label>
+          <textarea id="corr-form-reason" rows="2" placeholder="e.g. Forgotten badge, reader error, official court duty..."></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" id="btn-cancel-corr">Cancel</button>
+        <button class="btn-primary" id="btn-save-corr">Save Correction</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ SYSTEM USER (APP USERS) MODAL ══ -->
+  <div class="modal-backdrop" id="appuser-modal" style="display:none;">
+    <div class="modal-card modal-form-card">
+      <div class="modal-header">
+        <div class="modal-profile">
+          <div class="modal-icon-badge icon-appuser">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+          </div>
+          <div>
+            <h3 id="appuser-modal-title">System User Account</h3>
+            <span class="modal-subtext">Access credentials and permissions</span>
+          </div>
+        </div>
+        <button class="btn-close" id="btn-close-appuser-modal">&times;</button>
+      </div>
+      <div class="modal-body form-modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="appuser-form-username">Username <span class="req">*</span></label>
+            <input type="text" id="appuser-form-username" placeholder="e.g. registrar">
+          </div>
+          <div class="form-group">
+            <label for="appuser-form-fullname">Full Name <span class="req">*</span></label>
+            <input type="text" id="appuser-form-fullname" placeholder="e.g. Jane Smith">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="appuser-form-password">Password <span id="appuser-pw-req" class="req">*</span></label>
+            <input type="password" id="appuser-form-password" placeholder="Min 6 characters">
+            <small id="appuser-pw-hint" style="color:var(--text-muted); font-size:0.75rem; display:none;">Leave blank to keep existing password</small>
+          </div>
+          <div class="form-group">
+            <label for="appuser-form-role">Role <span class="req">*</span></label>
+            <select id="appuser-form-role">
+              <option value="viewer">Viewer (Read Only & Self-Service)</option>
+              <option value="admin">Admin (Full Control)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group" style="margin-top: 8px;">
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" id="appuser-form-active" checked>
+            <span>Account is Active</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" id="btn-cancel-appuser">Cancel</button>
+        <button class="btn-primary" id="btn-save-appuser">Save User</button>
       </div>
     </div>
   </div>

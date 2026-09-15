@@ -567,7 +567,7 @@ body.dark-theme {
   color: var(--text-secondary);
 }
 
-select, input[type="date"] {
+select, input[type="date"], input[type="time"], input[type="datetime-local"], .filter-input {
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
@@ -576,6 +576,27 @@ select, input[type="date"] {
   font-size: 0.85rem;
   outline: none;
   font-family: inherit;
+  transition: var(--transition-smooth);
+}
+
+select:focus, input[type="date"]:focus, input[type="time"]:focus, input[type="datetime-local"]:focus, .filter-input:focus {
+  border-color: rgba(0, 210, 255, 0.5);
+  background: rgba(0, 210, 255, 0.05);
+  box-shadow: 0 0 0 3px rgba(0, 210, 255, 0.08);
+}
+
+.form-group-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.form-group-inline label {
+  font-weight: 600;
+  font-size: 0.8rem;
+  white-space: nowrap;
 }
 
 select option {
@@ -1068,43 +1089,59 @@ select option {
 }
 
 .form-group label {
+  display: block;
   font-size: 0.78rem;
   font-weight: 600;
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  margin-bottom: 6px;
 }
 
 .form-group input[type="text"],
+.form-group input[type="password"],
 .form-group input[type="number"],
-.form-group select {
+.form-group input[type="email"],
+.form-group input[type="date"],
+.form-group input[type="time"],
+.form-group input[type="datetime-local"],
+.form-group select,
+.form-group textarea {
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
   color: #fff;
   padding: 10px 14px;
-  font-size: 0.88rem;
+  font-size: 0.9rem;
   outline: none;
   font-family: inherit;
   width: 100%;
+  box-sizing: border-box;
   transition: var(--transition-smooth);
 }
 
-.form-group input[type="text"]:focus,
-.form-group input[type="number"]:focus,
-.form-group select:focus {
-  border-color: rgba(0, 210, 255, 0.5);
-  background: rgba(0, 210, 255, 0.05);
-  box-shadow: 0 0 0 3px rgba(0, 210, 255, 0.08);
+.form-group textarea {
+  resize: vertical;
+  min-height: 72px;
 }
 
-.form-group input[type="text"]:disabled,
-.form-group input[type="number"]:disabled {
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+  border-color: rgba(0, 210, 255, 0.5);
+  background: rgba(0, 210, 255, 0.05);
+  box-shadow: 0 0 0 3px rgba(0, 210, 255, 0.1);
+}
+
+.form-group input:disabled,
+.form-group select:disabled,
+.form-group textarea:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 
-.form-group input::placeholder {
+.form-group input::placeholder,
+.form-group textarea::placeholder {
   color: var(--text-muted);
 }
 
@@ -1252,18 +1289,54 @@ body.role-viewer .admin-only {
   position: relative;
   display: flex;
   align-items: center;
+  width: 100%;
 }
 
 .input-with-icon svg {
   position: absolute;
   left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
   color: var(--text-muted);
   pointer-events: none;
+  z-index: 2;
+  transition: var(--transition-smooth);
 }
 
+.form-group .input-with-icon input,
+.input-with-icon input[type="text"],
+.input-with-icon input[type="password"],
 .input-with-icon input {
-  width: 100%;
-  padding-left: 42px;
+  padding-left: 44px !important;
+  background: rgba(15, 23, 42, 0.7) !important;
+  border: 1px solid var(--border-color) !important;
+  color: #fff !important;
+  height: 46px;
+  font-size: 0.95rem;
+  border-radius: var(--radius-sm);
+  box-sizing: border-box;
+}
+
+.form-group .input-with-icon input:focus,
+.input-with-icon input:focus {
+  border-color: rgba(0, 210, 255, 0.6) !important;
+  background: rgba(0, 210, 255, 0.06) !important;
+  box-shadow: 0 0 0 3px rgba(0, 210, 255, 0.15) !important;
+}
+
+.input-with-icon:focus-within svg {
+  color: var(--accent-cyan);
+}
+
+/* Chrome/Safari/Edge autofill dark background fix */
+input:-webkit-autofill,
+input:-webkit-autofill:hover, 
+input:-webkit-autofill:focus, 
+input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px #0f172a inset !important;
+  -webkit-text-fill-color: #f8fafc !important;
+  caret-color: #fff !important;
+  transition: background-color 5000s ease-in-out 0s;
 }
 
 .btn-block {

@@ -377,10 +377,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function loadEmployeesForSelects() {
     try {
-      const res = await apiFetch('/api/employees?limit=200');
+      const res = await apiFetch('/api/employees');
       const data = await res.json();
-      if (data.employees && Array.isArray(data.employees)) {
-        allEmployeesList = data.employees;
+      const list = Array.isArray(data) ? data : (data.employees || []);
+      if (list.length > 0) {
+        allEmployeesList = list;
         const options = allEmployeesList
           .map(e => `<option value="${e.user_id}">${escapeHtml(e.name)} (Badge: ${escapeHtml(e.badge_number || e.user_id)})</option>`)
           .join('');
@@ -1560,13 +1561,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const res = await apiFetch(`/api/employees?${params.toString()}`);
       const data = await res.json();
+      const employees = Array.isArray(data) ? data : (data.employees || []);
 
-      if (!data.employees.length) {
+      if (!employees.length) {
         employeesGrid.innerHTML = '<div class="table-empty" style="grid-column:1/-1;">No personnel found</div>';
         return;
       }
 
-      employeesGrid.innerHTML = data.employees.map(e => `
+      employeesGrid.innerHTML = employees.map(e => `
         <div class="emp-card" data-id="${e.user_id}">
           <div class="emp-card-header">
             <div class="avatar">${(e.name || '?').charAt(0)}</div>
@@ -1581,12 +1583,12 @@ document.addEventListener('DOMContentLoaded', () => {
               <span class="emp-value">${escapeHtml(e.dept_name || 'General')}</span>
             </div>
             <div class="emp-field">
-              <span class="emp-label">Total Punches</span>
-              <span class="emp-value">${Number(e.punch_count).toLocaleString()}</span>
+              <span class="emp-label">Gender</span>
+              <span class="emp-value">${escapeHtml(e.gender || '—')}</span>
             </div>
             <div class="emp-field">
               <span class="emp-label">Latest Activity</span>
-              <span class="emp-value font-mono" style="font-size:0.8rem">${e.last_punch ? formatTime(e.last_punch) : 'Never'}</span>
+              <span class="emp-value font-mono" style="font-size:0.8rem">${e.last_punch_time ? formatTime(e.last_punch_time) : (e.last_punch ? formatTime(e.last_punch) : 'Never')}</span>
             </div>
           </div>
         </div>

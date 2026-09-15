@@ -52,7 +52,13 @@ function generateToken() {
  * Middleware: require any authenticated user (admin or viewer)
  */
 async function requireAuth(req, res, next) {
-  const token = req.headers['x-auth-token'] || req.query._token;
+  let token = req.headers['x-auth-token'] || req.query._token;
+  if (!token && req.headers['authorization']) {
+    const parts = req.headers['authorization'].split(' ');
+    if (parts.length === 2 && parts[0].toLowerCase() === 'bearer') {
+      token = parts[1];
+    }
+  }
   if (!token) return res.status(401).json({ error: 'Authentication required' });
 
   try {
@@ -477,10 +483,17 @@ app.get('/api/reports/export/csv', requireAuth, async (req, res) => {
 app.get('/api/shifts', requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(`
-      SELECT schClassid AS id, schName AS name,
-             TIME(\`StartTime\`) AS start_time, TIME(\`EndTime\`) AS end_time,
-             LateMinutes AS late_grace_minutes, EarlyMinutes AS early_grace_minutes,
-             WorkDay AS work_day_fraction, WorkMins AS work_minutes
+      SELECT schClassid AS id, schClassid, schName AS name, schName AS SchName,
+             TIME(\`StartTime\`) AS start_time, \`StartTime\`,
+             TIME(\`EndTime\`) AS end_time, \`EndTime\`,
+             TIME(\`CheckInTime1\`) AS check_in_time1, \`CheckInTime1\`,
+             TIME(\`CheckInTime2\`) AS check_in_time2, \`CheckInTime2\`,
+             TIME(\`CheckOutTime1\`) AS check_out_time1, \`CheckOutTime1\`,
+             TIME(\`CheckOutTime2\`) AS check_out_time2, \`CheckOutTime2\`,
+             LateMinutes AS late_grace_minutes, LateMinutes,
+             EarlyMinutes AS early_grace_minutes, EarlyMinutes,
+             WorkDay AS work_day_fraction, WorkDay,
+             WorkMins AS work_minutes, WorkMins
       FROM SchClass ORDER BY schClassid ASC
     `);
     res.json(rows);
@@ -495,8 +508,17 @@ app.get('/api/schedules', requireAuth, async (req, res) => {
     const [schedules] = await pool.query(`
       SELECT n.NUM_RUNID AS id, n.NAME AS name,
              DATE(n.STARTDATE) AS start_date, DATE(n.ENDDATE) AS end_date,
-             n.CYLE AS cycle, n.UNITS AS units
-      FROM NUM_RUN n ORDER BY n.NUM_RUNID ASC
+             n.CYLE AS cycle, n.UNITS AS units,
+             COALESCE(u_cnt.cnt, 0) AS active_user_count,
+             COALESCE(n.CYLE, 1) * COALESCE(n.UNITS, 1) AS cycle_days,
+             CONCAT(COALESCE(n.CYLE, 1), ' ', CASE WHEN n.UNITS = 1 THEN 'Week(s)' WHEN n.UNITS = 2 THEN 'Month(s)' ELSE 'Day(s)' END) AS cycle_units
+      FROM NUM_RUN n
+      LEFT JOIN (
+        SELECT NUM_OF_RUN_ID, COUNT(*) AS cnt
+        FROM USER_OF_RUN
+        GROUP BY NUM_OF_RUN_ID
+      ) u_cnt ON u_cnt.NUM_OF_RUN_ID = n.NUM_RUNID
+      ORDER BY n.NUM_RUNID ASC
     `);
     const [details] = await pool.query(`
       SELECT nd.NUM_RUNID AS schedule_id,
@@ -649,9 +671,20 @@ app.delete('/api/leaves/:id', requireAdmin, async (req, res) => {
 // H1. List holidays
 app.get('/api/holidays', requireAuth, async (req, res) => {
   try {
-    const [rows] = await pool.query(
-      'SELECT HOLIDAYID AS id, HOLIDAYNAME AS name, STARTTIME AS date, DURATION AS duration_days, HOLIDAYTYPE AS type, DeptID AS dept_id FROM HOLIDAYS ORDER BY STARTTIME ASC'
-    );
+    const { year } = req.query;
+    let sql = `
+      SELECT HOLIDAYID AS id, HOLIDAYNAME AS name, STARTTIME AS date,
+             DURATION AS duration_days, DURATION AS duration,
+             HOLIDAYTYPE AS type, DeptID AS dept_id
+      FROM HOLIDAYS
+    `;
+    const params = [];
+    if (year && year !== 'all') {
+      sql += ' WHERE YEAR(STARTTIME) = ?';
+      params.push(parseInt(year, 10));
+    }
+    sql += ' ORDER BY STARTTIME ASC';
+    const [rows] = await pool.query(sql, params);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -719,6 +752,7 @@ app.get('/api/punch-corrections', requireAuth, async (req, res) => {
       SELECT cx.EXACTID AS id, cx.USERID AS user_id, e.name AS employee_name, e.badge_number,
              cx.CHECKTIME AS check_time, cx.CHECKTYPE AS check_type,
              cx.ISADD AS is_added, cx.ISMODIFY AS is_modified, cx.ISDELETE AS is_deleted,
+             COALESCE(cx.MODIFYBY, 'System Admin') AS operator,
              cx.MODIFYBY AS modified_by, cx.YUYIN AS reason
       FROM CHECKEXACT cx
       JOIN employees e ON e.user_id = cx.USERID

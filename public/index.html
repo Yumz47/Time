@@ -748,8 +748,9 @@
               <div class="form-group-inline">
                 <label for="holiday-year-filter">Year:</label>
                 <select id="holiday-year-filter" class="filter-input">
-                  <option value="2026" selected>2026</option>
+                  <option value="2026" selected>2026 (Current)</option>
                   <option value="2025">2025</option>
+                  <option value="2020">2020 (Legacy)</option>
                   <option value="all">All Years</option>
                 </select>
               </div>
@@ -778,6 +779,7 @@
                 <input type="date" id="corr-to-date" class="filter-input">
               </div>
               <button class="btn-secondary" id="btn-filter-corrections">Filter</button>
+              <button class="btn-secondary" id="btn-clear-corrections">Show All</button>
             </div>
             <button class="btn-primary admin-only" id="btn-open-correction-modal">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
@@ -1228,6 +1230,6 @@
   <!-- Toast Notification -->
   <div class="toast-container" id="toast-container"></div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=2.3"></script>
 </body>
 </html>

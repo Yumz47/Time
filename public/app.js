@@ -821,28 +821,32 @@ document.addEventListener('DOMContentLoaded', () => {
         shiftsGrid.innerHTML = '<div class="table-empty">No shift classes found</div>';
       } else {
         shiftsGrid.innerHTML = shifts.map(s => {
-          const startTime = (s.StartTime || '').substring(11, 16) || s.StartTime;
-          const endTime = (s.EndTime || '').substring(11, 16) || s.EndTime;
-          const checkIn = (s.CheckInTime1 || '').substring(11, 16) || '--';
-          const checkOut = (s.CheckOutTime2 || '').substring(11, 16) || '--';
+          const shiftName = s.name || s.SchName || ('Shift #' + s.id);
+          const startTime = s.start_time || (s.StartTime ? String(s.StartTime).substring(11, 16) : '08:00');
+          const endTime = s.end_time || (s.EndTime ? String(s.EndTime).substring(11, 16) : '17:00');
+          const checkIn1 = s.check_in_time1 || (s.CheckInTime1 ? String(s.CheckInTime1).substring(11, 16) : '--');
+          const checkIn2 = s.check_in_time2 || (s.CheckInTime2 ? String(s.CheckInTime2).substring(11, 16) : '--');
+          const checkOut1 = s.check_out_time1 || (s.CheckOutTime1 ? String(s.CheckOutTime1).substring(11, 16) : '--');
+          const checkOut2 = s.check_out_time2 || (s.CheckOutTime2 ? String(s.CheckOutTime2).substring(11, 16) : '--');
+          const lateMin = s.late_grace_minutes != null ? s.late_grace_minutes : s.LateMinutes;
 
           return `
             <div class="shift-card">
               <div class="shift-card-header">
-                <span class="shift-name">${escapeHtml(s.SchName)}</span>
+                <span class="shift-name">${escapeHtml(shiftName)}</span>
                 <span class="shift-time-badge">${startTime} – ${endTime}</span>
               </div>
               <div class="shift-detail-row">
                 <span>Check-in Window:</span>
-                <span>${checkIn} – ${(s.CheckInTime2 || '').substring(11, 16)}</span>
+                <span class="font-mono">${checkIn1} – ${checkIn2}</span>
               </div>
               <div class="shift-detail-row">
                 <span>Check-out Window:</span>
-                <span>${(s.CheckOutTime1 || '').substring(11, 16)} – ${checkOut}</span>
+                <span class="font-mono">${checkOut1} – ${checkOut2}</span>
               </div>
               <div class="shift-detail-row">
-                <span>Auto Deduct Lunch:</span>
-                <span>${s.LateMinutes ? s.LateMinutes + ' min' : 'No'}</span>
+                <span>Grace / Auto Deduct:</span>
+                <span>${lateMin ? lateMin + ' min' : 'Standard'}</span>
               </div>
             </div>
           `;
@@ -856,22 +860,22 @@ document.addEventListener('DOMContentLoaded', () => {
           <div class="schedule-card">
             <div class="shift-card-header">
               <span class="shift-name">${escapeHtml(sc.name)}</span>
-              <span class="status-pill status-in">${sc.active_user_count} Assigned</span>
+              <span class="status-pill status-in">${sc.active_user_count || 0} Assigned</span>
             </div>
             <div class="shift-detail-row">
               <span>Schedule ID:</span>
               <span class="font-mono">#${sc.id}</span>
             </div>
             <div class="shift-detail-row">
-              <span>Cycle Units:</span>
-              <span>${sc.cycle_units} (${sc.cycle_days} days)</span>
+              <span>Cycle / Rotation:</span>
+              <span>${sc.cycle_units || 'Weekly Cycle'}</span>
             </div>
             <div class="shift-detail-row">
               <span>Valid Period:</span>
-              <span class="font-mono">${sc.start_date || 'Ongoing'} → ${sc.end_date || 'Indefinite'}</span>
+              <span class="font-mono">${sc.start_date ? String(sc.start_date).slice(0, 10) : '2013-01-01'} → ${sc.end_date ? String(sc.end_date).slice(0, 10) : 'Ongoing'}</span>
             </div>
             <div style="margin-top: 8px;">
-              <small style="color:var(--text-muted);">Assigned Personnel (116 assignments active)</small>
+              <small style="color:var(--text-muted);">Active Personnel Rotation (${sc.active_user_count || 0} employees assigned)</small>
             </div>
           </div>
         `).join('');
@@ -930,6 +934,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const statusClass = `status-${l.status}`;
         const days = l.duration_days ? `${l.duration_days} day(s)` : '--';
         const isAdmin = currentUser && currentUser.role === 'admin';
+        const startDate = l.start_date ? String(l.start_date).slice(0, 10) : '--';
+        const endDate = l.end_date ? String(l.end_date).slice(0, 10) : '--';
 
         return `
           <tr>
@@ -939,7 +945,7 @@ document.addEventListener('DOMContentLoaded', () => {
             </td>
             <td>${escapeHtml(l.dept_name || 'General')}</td>
             <td><span class="badge-number">${escapeHtml(l.leave_type_name || 'Leave')}</span></td>
-            <td>${l.start_date} → ${l.end_date}</td>
+            <td class="font-mono">${startDate} → ${endDate}</td>
             <td><strong>${days}</strong></td>
             <td style="color:var(--text-secondary); max-width:200px;" title="${escapeHtml(l.notes || '')}">${escapeHtml(l.notes || '—')}</td>
             <td><span class="status-pill ${statusClass}">${l.status.toUpperCase()}</span></td>
@@ -1102,7 +1108,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       holidaysGrid.innerHTML = list.map(h => {
-        const dateObj = new Date(h.date + 'T00:00:00');
+        const dateStr = h.date ? String(h.date).slice(0, 10) : '';
+        const dateObj = new Date(dateStr + 'T12:00:00');
         const monthStr = dateObj.toLocaleDateString('en-US', { month: 'short' });
         const dayStr = dateObj.getDate();
         const weekdayStr = dateObj.toLocaleDateString('en-US', { weekday: 'long' });
@@ -1117,7 +1124,7 @@ document.addEventListener('DOMContentLoaded', () => {
               </div>
               <div style="flex:1;">
                 <h3 style="font-size:1.05rem; font-weight:700;">${escapeHtml(h.name)}</h3>
-                <span style="font-size:0.8rem; color:var(--text-muted);">${weekdayStr}, ${h.date}</span>
+                <span style="font-size:0.8rem; color:var(--text-muted);">${weekdayStr}, ${dateStr}</span>
               </div>
               ${isAdmin ? `
                 <button class="btn-icon delete" data-id="${h.id}" data-name="${escapeHtml(h.name)}" title="Delete Holiday">
@@ -1127,7 +1134,7 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>
             <div class="shift-detail-row" style="margin-top:6px; border-top:1px solid rgba(255,255,255,0.05); padding-top:8px;">
               <span>Duration:</span>
-              <span class="font-mono">${h.duration || 1} day(s)</span>
+              <span class="font-mono">${h.duration || h.duration_days || 1} day(s)</span>
             </div>
           </div>
         `;
@@ -1210,8 +1217,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const corrFormType = document.getElementById('corr-form-type');
   const corrFormReason = document.getElementById('corr-form-reason');
 
-  if (corrFromDate && !corrFromDate.value) corrFromDate.value = '2026-09-01';
-  if (corrToDate && !corrToDate.value) corrToDate.value = '2026-09-15';
+  if (corrFromDate && !corrFromDate.value) corrFromDate.value = '';
+  if (corrToDate && !corrToDate.value) corrToDate.value = '';
 
   async function loadCorrections() {
     if (!correctionsTbody) return;
@@ -1231,6 +1238,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       correctionsTbody.innerHTML = list.map(c => {
         const isAdmin = currentUser && currentUser.role === 'admin';
+        const isDeleted = c.is_deleted === 1;
         return `
           <tr>
             <td class="font-mono" style="color:var(--accent-cyan);">${formatTime(c.check_time)}</td>
@@ -1238,16 +1246,16 @@ document.addEventListener('DOMContentLoaded', () => {
               <strong>${escapeHtml(c.employee_name)}</strong>
               <div style="font-size:0.75rem; color:var(--text-muted)">Badge #${escapeHtml(c.badge_number || c.user_id)}</div>
             </td>
-            <td><span class="status-pill status-${c.check_type.toLowerCase()}">${c.check_type.toUpperCase()}</span></td>
+            <td><span class="status-pill status-${(c.check_type || 'i').toLowerCase()}">${(c.check_type || 'I').toUpperCase()}</span></td>
             <td>${escapeHtml(c.reason || '—')}</td>
-            <td><span class="badge-number">${escapeHtml(c.operator || 'SYSTEM')}</span></td>
-            <td><span class="status-pill status-approved">VERIFIED</span></td>
+            <td><span class="badge-number">${escapeHtml(c.operator || c.modified_by || 'SYSTEM')}</span></td>
+            <td><span class="status-pill ${isDeleted ? 'status-rejected' : 'status-approved'}">${isDeleted ? 'VOIDED' : 'VERIFIED'}</span></td>
             <td>
-              ${isAdmin ? `
+              ${isAdmin && !isDeleted ? `
                 <button class="btn-icon delete" data-id="${c.id}" data-user="${escapeHtml(c.employee_name)}" title="Void Correction">
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
                 </button>
-              ` : '—'}
+              ` : (isDeleted ? '<span style="color:var(--text-muted); font-size:0.75rem;">Voided</span>' : '—')}
             </td>
           </tr>
         `;
@@ -1320,7 +1328,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  const btnClearCorrections = document.getElementById('btn-clear-corrections');
   btnFilterCorrections?.addEventListener('click', loadCorrections);
+  btnClearCorrections?.addEventListener('click', () => {
+    if (corrFromDate) corrFromDate.value = '';
+    if (corrToDate) corrToDate.value = '';
+    loadCorrections();
+  });
 
   // ─── 13. MODULE: SYSTEM USERS ADMIN (APP USERS) ───────────────────────────
   const appUsersTbody = document.getElementById('app-users-tbody');

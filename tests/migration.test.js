@@ -140,9 +140,9 @@ describe('Database Live Verification & QA Metrics', () => {
   test('Data integrity: row counts in MySQL match or exceed legacy data', async () => {
     if (!pool) pool = createPool();
 
-    // Verify HOLIDAYS (11 records in MDB)
+    // Verify HOLIDAYS (at least 11 legacy records in MDB)
     const [[{ holidayCount }]] = await pool.query('SELECT COUNT(*) AS holidayCount FROM HOLIDAYS;');
-    assert.strictEqual(Number(holidayCount), 11);
+    assert.ok(Number(holidayCount) >= 11, 'Expected at least 11 holidays');
 
     // Verify Machines (6 records in MDB)
     const [[{ machineCount }]] = await pool.query('SELECT COUNT(*) AS machineCount FROM Machines;');

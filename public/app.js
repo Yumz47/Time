@@ -1499,10 +1499,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const kpiPunchesToday = document.getElementById('kpi-punches-today');
       const kpiTotalPunches = document.getElementById('kpi-total-punches');
 
-      if (kpiTotalEmployees) kpiTotalEmployees.textContent = data.stats.totalEmployees.toLocaleString();
-      if (kpiActiveToday) kpiActiveToday.textContent = data.stats.activeToday.toLocaleString();
-      if (kpiPunchesToday) kpiPunchesToday.textContent = data.stats.punchesToday.toLocaleString();
-      if (kpiTotalPunches) kpiTotalPunches.textContent = data.stats.totalPunches.toLocaleString();
+      const stats = data.stats || data.summary || {};
+      if (kpiTotalEmployees) kpiTotalEmployees.textContent = Number(stats.totalEmployees || 0).toLocaleString();
+      if (kpiActiveToday) kpiActiveToday.textContent = Number(stats.activeToday || 0).toLocaleString();
+      if (kpiPunchesToday) kpiPunchesToday.textContent = Number(stats.punchesToday || 0).toLocaleString();
+      if (kpiTotalPunches) kpiTotalPunches.textContent = Number(stats.totalPunches || 0).toLocaleString();
 
       const recentPunchesStream = document.getElementById('recent-punches-stream');
       if (recentPunchesStream) {

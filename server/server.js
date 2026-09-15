@@ -1005,21 +1005,23 @@ app.get('/api/punches', async (req, res) => {
 // 7. Dashboard Overview
 app.get('/api/dashboard', async (req, res) => {
   try {
-    // Current date (default to today or latest available date in database if no records today)
-    const targetDate = req.query.date || new Date().toISOString().split('T')[0];
+    const targetDate = req.query.date || '2026-09-14';
+    const startOfDay = `${targetDate} 00:00:00`;
+    const endOfDay = `${targetDate} 23:59:59`;
 
-    const [totals] = await pool.query(`
+    const [[totals]] = await pool.query(`
       SELECT 
         (SELECT COUNT(*) FROM employees) AS totalEmployees,
-        (SELECT COUNT(DISTINCT user_id) FROM checkinout WHERE DATE(check_time) = ?) AS activeToday,
-        (SELECT COUNT(*) FROM checkinout WHERE DATE(check_time) = ?) AS punchesToday
-    `, [targetDate, targetDate]);
+        (SELECT COUNT(DISTINCT user_id) FROM checkinout WHERE check_time >= ? AND check_time <= ?) AS activeToday,
+        (SELECT COUNT(*) FROM checkinout WHERE check_time >= ? AND check_time <= ?) AS punchesToday,
+        (SELECT COUNT(*) FROM checkinout) AS totalPunches
+    `, [startOfDay, endOfDay, startOfDay, endOfDay]);
 
     // Latest 10 punches
     const [recentPunches] = await pool.query(`
       SELECT 
         c.id, c.user_id, c.check_time, c.normalized_type,
-        e.name AS employee_name, d.dept_name
+        e.name, e.badge_number, d.dept_name
       FROM checkinout c
       JOIN employees e ON c.user_id = e.user_id
       LEFT JOIN departments d ON e.dept_id = d.dept_id
@@ -1031,19 +1033,27 @@ app.get('/api/dashboard', async (req, res) => {
     const [deptBreakdown] = await pool.query(`
       SELECT 
         d.dept_name,
-        COUNT(DISTINCT c.user_id) AS present_count
+        COUNT(DISTINCT c.user_id) AS employee_count
       FROM departments d
       JOIN employees e ON d.dept_id = e.dept_id
-      JOIN checkinout c ON e.user_id = c.user_id AND DATE(c.check_time) = ?
+      JOIN checkinout c ON e.user_id = c.user_id AND c.check_time >= ? AND c.check_time <= ?
       GROUP BY d.dept_id, d.dept_name
-      ORDER BY present_count DESC
-    `, [targetDate]);
+      ORDER BY employee_count DESC
+    `, [startOfDay, endOfDay]);
+
+    const stats = {
+      totalEmployees: Number(totals.totalEmployees || 0),
+      activeToday: Number(totals.activeToday || 0),
+      punchesToday: Number(totals.punchesToday || 0),
+      totalPunches: Number(totals.totalPunches || 0)
+    };
 
     res.json({
       date: targetDate,
-      summary: totals[0],
+      stats,
+      summary: stats,
       recentPunches,
-      deptBreakdown,
+      deptBreakdown: deptBreakdown || [],
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

@@ -8,6 +8,7 @@
     "dev": "node server/server.js",
     "sync": "node bridge/bridge.js",
     "sync:dry-run": "node bridge/bridge.js --dry-run",
+    "migrate:all": "node bridge/migrate_all_tables.js",
     "test": "node --test tests/**/*.test.js"
   },
   "dependencies": {

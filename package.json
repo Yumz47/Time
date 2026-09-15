@@ -1,0 +1,30 @@
+{
+  "name": "timeclock-viewer",
+  "version": "1.0.0",
+  "description": "Personnel Clock-In/Clock-Out Viewer with Access to MySQL Bridge",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "dev": "node server/server.js",
+    "sync": "node bridge/bridge.js",
+    "sync:dry-run": "node bridge/bridge.js --dry-run",
+    "test": "node --test tests/**/*.test.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "mdb-reader": "^2.0.1",
+    "mysql2": "^3.12.0",
+    "node-cron": "^3.0.3"
+  },
+  "keywords": [
+    "attendance",
+    "timeclock",
+    "access-to-mysql",
+    "bridge",
+    "zkteco"
+  ],
+  "author": "",
+  "license": "ISC"
+}

@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TimePulse — Personnel Attendance & Time Clock</title>
+  <meta name="description" content="Modern personnel time clock attendance viewer with Access to MySQL bridge">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="dark-theme">
+  <!-- App Container -->
+  <div class="app-layout">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="brand-container">
+        <div class="brand-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="12 6 12 12 16 14"></polyline>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-name">TimePulse</span>
+          <span class="brand-tag">ATTENDANCE HUB</span>
+        </div>
+      </div>
+
+      <nav class="nav-menu">
+        <button class="nav-item active" id="nav-dashboard" data-tab="dashboard">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="7"></rect>
+            <rect x="14" y="3" width="7" height="7"></rect>
+            <rect x="14" y="14" width="7" height="7"></rect>
+            <rect x="3" y="14" width="7" height="7"></rect>
+          </svg>
+          <span>Dashboard</span>
+        </button>
+        <button class="nav-item" id="nav-employees" data-tab="employees">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+            <circle cx="9" cy="7" r="4"></circle>
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+          </svg>
+          <span>Personnel</span>
+        </button>
+        <button class="nav-item" id="nav-punches" data-tab="punches">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+          </svg>
+          <span>Punch Log</span>
+        </button>
+        <button class="nav-item" id="nav-reports" data-tab="reports">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+            <polyline points="10 9 9 9 8 9"></polyline>
+          </svg>
+          <span>Reports</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="bridge-status-card">
+          <div class="bridge-header">
+            <span class="status-indicator online" id="bridge-indicator"></span>
+            <span class="bridge-title">Access Bridge</span>
+          </div>
+          <p class="bridge-text" id="bridge-last-sync">Checking sync status...</p>
+          <button class="btn-sync" id="btn-trigger-sync">
+            <svg id="sync-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+            </svg>
+            <span>Sync Now</span>
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-viewport">
+      <!-- Header Bar -->
+      <header class="topbar">
+        <div class="topbar-title">
+          <h1 id="page-title">Attendance Dashboard</h1>
+          <p class="subtitle" id="page-subtitle">Real-time personnel clock-in/out overview</p>
+        </div>
+        <div class="topbar-actions">
+          <div class="live-clock" id="live-clock">--:--:--</div>
+          <div class="database-badge">
+            <span class="db-dot"></span>
+            <span>MySQL Powered</span>
+          </div>
+        </div>
+      </header>
+
+      <!-- Content Views -->
+      <div class="content-wrapper">
+        <!-- 1. DASHBOARD VIEW -->
+        <section class="tab-view active" id="view-dashboard">
+          <!-- KPI Metrics Row -->
+          <div class="kpi-grid">
+            <div class="kpi-card">
+              <div class="kpi-icon icon-users">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              </div>
+              <div class="kpi-info">
+                <span class="kpi-label">Total Personnel</span>
+                <span class="kpi-value" id="kpi-total-employees">--</span>
+              </div>
+            </div>
+
+            <div class="kpi-card accent-green">
+              <div class="kpi-icon icon-in">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+              </div>
+              <div class="kpi-info">
+                <span class="kpi-label">Active Today</span>
+                <span class="kpi-value" id="kpi-active-today">--</span>
+              </div>
+            </div>
+
+            <div class="kpi-card accent-blue">
+              <div class="kpi-icon icon-punch">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 14 14"/></svg>
+              </div>
+              <div class="kpi-info">
+                <span class="kpi-label">Punches Today</span>
+                <span class="kpi-value" id="kpi-punches-today">--</span>
+              </div>
+            </div>
+
+            <div class="kpi-card accent-purple">
+              <div class="kpi-icon icon-db">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+              </div>
+              <div class="kpi-info">
+                <span class="kpi-label">Total Historical Punches</span>
+                <span class="kpi-value" id="kpi-total-punches">--</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Dashboard Two-Column Layout -->
+          <div class="dashboard-grid">
+            <!-- Recent Activity Feed -->
+            <div class="glass-panel">
+              <div class="panel-header">
+                <h2>Recent Punch Activity</h2>
+                <span class="badge-subtle">Latest 10 punches</span>
+              </div>
+              <div class="punch-stream" id="recent-punches-stream">
+                <div class="loading-spinner">Loading activity...</div>
+              </div>
+            </div>
+
+            <!-- Department Breakdown -->
+            <div class="glass-panel">
+              <div class="panel-header">
+                <h2>Department Attendance</h2>
+                <span class="badge-subtle">Present Today</span>
+              </div>
+              <div class="dept-list" id="dept-breakdown-list">
+                <div class="loading-spinner">Loading departments...</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 2. PERSONNEL DIRECTORY VIEW -->
+        <section class="tab-view" id="view-employees">
+          <div class="filter-toolbar">
+            <div class="search-box">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input type="text" id="emp-search-input" placeholder="Search by name or badge #...">
+            </div>
+            <div class="filter-select">
+              <select id="emp-dept-filter">
+                <option value="">All Departments</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="employees-grid" id="employees-grid">
+            <div class="loading-spinner">Loading personnel...</div>
+          </div>
+        </section>
+
+        <!-- 3. PUNCH LOG VIEW -->
+        <section class="tab-view" id="view-punches">
+          <div class="filter-toolbar">
+            <div class="filter-group">
+              <label for="punch-date-from">From:</label>
+              <input type="date" id="punch-date-from">
+            </div>
+            <div class="filter-group">
+              <label for="punch-date-to">To:</label>
+              <input type="date" id="punch-date-to">
+            </div>
+            <div class="filter-group">
+              <label for="punch-type-filter">Type:</label>
+              <select id="punch-type-filter">
+                <option value="">All Types</option>
+                <option value="in">Clock In</option>
+                <option value="out">Clock Out</option>
+              </select>
+            </div>
+            <button class="btn-primary" id="btn-apply-punch-filters">Apply Filters</button>
+            <button class="btn-secondary" id="btn-reset-punch-filters">Reset</button>
+          </div>
+
+          <div class="glass-table-container">
+            <table class="glass-table" id="punches-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Badge #</th>
+                  <th>Personnel Name</th>
+                  <th>Department</th>
+                  <th>Action</th>
+                  <th>Device / Sensor</th>
+                </tr>
+              </thead>
+              <tbody id="punches-tbody">
+                <tr><td colspan="6" class="table-empty">Loading records...</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="pagination-bar" id="punches-pagination">
+            <span id="punch-page-info">Showing 0 of 0</span>
+            <div class="page-buttons">
+              <button class="btn-page" id="btn-punch-prev" disabled>Previous</button>
+              <button class="btn-page" id="btn-punch-next" disabled>Next</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 4. ATTENDANCE REPORTS VIEW -->
+        <section class="tab-view" id="view-reports">
+          <div class="filter-toolbar">
+            <div class="filter-group">
+              <label for="report-from">Date From:</label>
+              <input type="date" id="report-from">
+            </div>
+            <div class="filter-group">
+              <label for="report-to">Date To:</label>
+              <input type="date" id="report-to">
+            </div>
+            <div class="filter-group">
+              <label for="report-dept">Department:</label>
+              <select id="report-dept">
+                <option value="">All Departments</option>
+              </select>
+            </div>
+            <button class="btn-primary" id="btn-generate-report">Generate Report</button>
+            <button class="btn-secondary" id="btn-export-csv" disabled>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              <span>Export CSV</span>
+            </button>
+          </div>
+
+          <div class="glass-table-container">
+            <table class="glass-table" id="reports-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Badge #</th>
+                  <th>Personnel Name</th>
+                  <th>Department</th>
+                  <th>First In</th>
+                  <th>Last Out</th>
+                  <th>Total Punches</th>
+                  <th>Total Hours</th>
+                </tr>
+              </thead>
+              <tbody id="reports-tbody">
+                <tr><td colspan="8" class="table-empty">Select a date range and click "Generate Report"</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <!-- Employee Details Modal -->
+  <div class="modal-backdrop" id="employee-modal" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-profile">
+          <div class="avatar" id="modal-emp-avatar">--</div>
+          <div>
+            <h3 id="modal-emp-name">Employee Name</h3>
+            <span class="modal-subtext" id="modal-emp-details">Badge # - Department</span>
+          </div>
+        </div>
+        <button class="btn-close" id="btn-close-modal">&times;</button>
+      </div>
+      <div class="modal-tabs">
+        <button class="modal-tab active" data-subtab="summary">Daily Summary</button>
+        <button class="modal-tab" data-subtab="punches">Raw Punch History</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-subview active" id="modal-subview-summary">
+          <table class="glass-table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>First In</th>
+                <th>Last Out</th>
+                <th>Punches</th>
+                <th>Hours</th>
+              </tr>
+            </thead>
+            <tbody id="modal-summary-tbody">
+              <tr><td colspan="5">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="modal-subview" id="modal-subview-punches" style="display: none;">
+          <table class="glass-table">
+            <thead>
+              <tr>
+                <th>Punch Time</th>
+                <th>Action</th>
+                <th>Device Serial</th>
+              </tr>
+            </thead>
+            <tbody id="modal-punches-tbody">
+              <tr><td colspan="3">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

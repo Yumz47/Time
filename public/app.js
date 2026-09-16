@@ -65,6 +65,84 @@ document.addEventListener('DOMContentLoaded', () => {
   const confirmDeleteTitle = document.getElementById('confirm-delete-title');
   const confirmDeleteMessage = document.getElementById('confirm-delete-message');
 
+  // ─── 0. THEME ENGINE & CONTROLLER ──────────────────────────────────────────
+  const btnThemeToggle = document.getElementById('btn-theme-toggle');
+  const btnThemeToggleLogin = document.getElementById('btn-theme-toggle-login');
+  const themeToggleLabel = document.getElementById('theme-toggle-label');
+  const themeToggleLoginLabel = document.getElementById('theme-toggle-login-label');
+
+  function getActiveTheme() {
+    if (document.body.classList.contains('light-theme')) return 'light';
+    if (document.body.classList.contains('dark-theme')) return 'dark';
+    try {
+      const stored = localStorage.getItem('tp_theme');
+      if (stored === 'light' || stored === 'dark') return stored;
+    } catch (e) {}
+    return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+  }
+
+  function applyTheme(targetTheme, persist = true) {
+    const theme = (typeof ThemeHelper !== 'undefined') 
+      ? ThemeHelper.normalizeTheme(targetTheme) 
+      : (targetTheme === 'light' ? 'light' : 'dark');
+
+    document.documentElement.setAttribute('data-theme', theme);
+    document.body.classList.remove('dark-theme', 'light-theme');
+    document.body.classList.add(`${theme}-theme`);
+
+    if (persist) {
+      try {
+        localStorage.setItem('tp_theme', theme);
+      } catch (e) {}
+    }
+
+    const nextModeName = (theme === 'dark') ? 'Light' : 'Dark';
+    const currentModeName = (theme === 'dark') ? 'Dark' : 'Light';
+
+    if (themeToggleLabel) {
+      themeToggleLabel.textContent = currentModeName;
+    }
+    if (themeToggleLoginLabel) {
+      themeToggleLoginLabel.textContent = currentModeName;
+    }
+    if (btnThemeToggle) {
+      btnThemeToggle.setAttribute('aria-label', `Switch to ${nextModeName} Mode`);
+      btnThemeToggle.setAttribute('title', `Switch to ${nextModeName} Mode`);
+    }
+    if (btnThemeToggleLogin) {
+      btnThemeToggleLogin.setAttribute('aria-label', `Switch to ${nextModeName} Mode`);
+      btnThemeToggleLogin.setAttribute('title', `Switch to ${nextModeName} Mode`);
+    }
+  }
+
+  function toggleTheme() {
+    const current = getActiveTheme();
+    const next = (typeof ThemeHelper !== 'undefined') 
+      ? ThemeHelper.getNextTheme(current) 
+      : (current === 'dark' ? 'light' : 'dark');
+    applyTheme(next, true);
+  }
+
+  if (btnThemeToggle) {
+    btnThemeToggle.addEventListener('click', toggleTheme);
+  }
+  if (btnThemeToggleLogin) {
+    btnThemeToggleLogin.addEventListener('click', toggleTheme);
+  }
+
+  if (window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+      try {
+        if (!localStorage.getItem('tp_theme')) {
+          applyTheme(e.matches ? 'dark' : 'light', false);
+        }
+      } catch (err) {}
+    });
+  }
+
+  // Initial theme sync
+  applyTheme(getActiveTheme(), false);
+
   // ─── 1. AUTHENTICATED FETCH HELPER ─────────────────────────────────────────
   async function apiFetch(url, options = {}) {
     const headers = { ...(options.headers || {}) };
@@ -1779,7 +1857,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnCloseDeviceModal = document.getElementById('btn-close-device-modal');
   const btnCancelDevice = document.getElementById('btn-cancel-device');
   const btnSaveDevice = document.getElementById('btn-save-device');
-  const btnOpenDeviceModal = document.getElementById('btn-open-device-modal');
+  const btnOpenDeviceModal = document.getElementById('btn-add-device') || document.getElementById('btn-open-device-modal');
   const btnImportDevices = document.getElementById('btn-import-devices');
   const deviceFormSn = document.getElementById('device-form-sn');
   const deviceFormAlias = document.getElementById('device-form-alias');
@@ -1788,15 +1866,105 @@ document.addEventListener('DOMContentLoaded', () => {
   const deviceFormLocation = document.getElementById('device-form-location');
   const deviceFormStatus = document.getElementById('device-form-status');
 
+  const btnTestAllDevices = document.getElementById('btn-test-all-devices');
+  let deviceConnectionStatuses = {};
+  let isProbingDevices = false;
+
+  function getConnectionBadgeHtml(d) {
+    if (!d.ip_address) {
+      return `<span class="device-conn-badge no-ip" title="No IP address configured">— No IP</span>`;
+    }
+    const status = deviceConnectionStatuses[d.id];
+    if (!status) {
+      return `<span class="device-conn-badge checking" id="device-conn-${d.id}"><span class="conn-dot checking"></span>Checking...</span>`;
+    }
+    if (status.checking) {
+      return `<span class="device-conn-badge checking" id="device-conn-${d.id}"><span class="conn-dot checking"></span>Testing...</span>`;
+    }
+    if (status.connected) {
+      return `<span class="device-conn-badge connected" id="device-conn-${d.id}" title="Reachable on port 4370 (${status.latencyMs}ms)"><span class="conn-dot connected"></span>Connected <small class="conn-latency">${status.latencyMs}ms</small></span>`;
+    }
+    return `<span class="device-conn-badge disconnected" id="device-conn-${d.id}" title="${escapeHtml(status.error || 'Connection timed out')}"><span class="conn-dot disconnected"></span>Disconnected</span>`;
+  }
+
+  async function checkSingleDeviceConnection(id) {
+    const badgeEl = document.getElementById(`device-conn-${id}`);
+    if (badgeEl) {
+      badgeEl.className = 'device-conn-badge checking';
+      badgeEl.innerHTML = '<span class="conn-dot checking"></span>Testing...';
+    }
+    deviceConnectionStatuses[id] = { checking: true };
+
+    try {
+      const res = await apiFetch(`/api/devices/${id}/ping`);
+      const data = await res.json();
+      deviceConnectionStatuses[id] = data;
+      const target = allDevices.find(x => x.id === id);
+      if (badgeEl && target) {
+        badgeEl.outerHTML = getConnectionBadgeHtml(target);
+      }
+      if (data.connected) {
+        showToast(`Clock ${data.alias || data.sn} is connected (${data.latencyMs}ms)`, 'success');
+      } else {
+        showToast(`Clock ${data.alias || data.sn} is unreachable: ${data.error || 'Timeout'}`, 'error');
+      }
+    } catch (e) {
+      deviceConnectionStatuses[id] = { connected: false, error: e.message };
+      const target = allDevices.find(x => x.id === id);
+      if (badgeEl && target) {
+        badgeEl.outerHTML = getConnectionBadgeHtml(target);
+      }
+      showToast(`Ping failed: ${e.message}`, 'error');
+    }
+  }
+
+  async function checkAllDeviceConnections() {
+    if (isProbingDevices) return;
+    isProbingDevices = true;
+    if (btnTestAllDevices) btnTestAllDevices.classList.add('loading');
+
+    // Show checking state on badges
+    allDevices.forEach(d => {
+      if (d.ip_address) {
+        const el = document.getElementById(`device-conn-${d.id}`);
+        if (el) {
+          el.className = 'device-conn-badge checking';
+          el.innerHTML = '<span class="conn-dot checking"></span>Checking...';
+        }
+      }
+    });
+
+    try {
+      const res = await apiFetch('/api/devices/live-status');
+      const data = await res.json();
+      if (data.statuses) {
+        deviceConnectionStatuses = { ...deviceConnectionStatuses, ...data.statuses };
+        // Update DOM badges
+        allDevices.forEach(d => {
+          const el = document.getElementById(`device-conn-${d.id}`);
+          if (el) {
+            el.outerHTML = getConnectionBadgeHtml(d);
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('[Devices] Failed to probe connections:', e.message);
+    } finally {
+      isProbingDevices = false;
+      if (btnTestAllDevices) btnTestAllDevices.classList.remove('loading');
+    }
+  }
+
   async function loadDevices() {
     if (!devicesTbody) return;
-    devicesTbody.innerHTML = '<tr><td colspan="8" class="table-empty">Loading devices...</td></tr>';
+    devicesTbody.innerHTML = '<tr><td colspan="9" class="table-empty">Loading devices...</td></tr>';
     try {
       const res = await apiFetch('/api/devices');
       allDevices = await res.json();
       renderDevices(allDevices);
+      checkAllDeviceConnections();
     } catch (e) {
-      devicesTbody.innerHTML = `<tr><td colspan="8" class="table-empty">Error loading devices: ${escapeHtml(e.message)}</td></tr>`;
+      devicesTbody.innerHTML = `<tr><td colspan="9" class="table-empty">Error loading devices: ${escapeHtml(e.message)}</td></tr>`;
     }
   }
 
@@ -1811,7 +1979,7 @@ document.addEventListener('DOMContentLoaded', () => {
       : list;
 
     if (!filtered.length) {
-      devicesTbody.innerHTML = '<tr><td colspan="8" class="table-empty">No devices found</td></tr>';
+      devicesTbody.innerHTML = '<tr><td colspan="9" class="table-empty">No devices found</td></tr>';
       return;
     }
 
@@ -1822,10 +1990,14 @@ document.addEventListener('DOMContentLoaded', () => {
         <td><span class="font-mono" style="color:var(--accent-cyan);">${escapeHtml(d.ip_address || '—')}</span></td>
         <td style="color:var(--text-secondary);">${escapeHtml(d.location || '—')}</td>
         <td style="color:var(--text-muted); font-size:0.82rem;">${escapeHtml(d.model || '—')}</td>
+        <td>${getConnectionBadgeHtml(d)}</td>
         <td><span class="device-status-badge ${d.status}">${d.status === 'active' ? '● Active' : '○ Inactive'}</span></td>
         <td><span class="punch-count-pill">${Number(d.punch_count).toLocaleString()}</span></td>
         <td>
           <div class="table-actions">
+            <button class="btn-icon ping" data-id="${d.id}" data-alias="${escapeHtml(d.alias || d.sn)}" title="Test connection (port 4370)">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+            </button>
             <button class="btn-icon edit" data-id="${d.id}" title="Edit device">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             </button>
@@ -1837,6 +2009,14 @@ document.addEventListener('DOMContentLoaded', () => {
       </tr>
     `).join('');
 
+    devicesTbody.querySelectorAll('.btn-icon.ping').forEach(btn => {
+      btn.addEventListener('click', () => {
+        btn.classList.add('spinning');
+        checkSingleDeviceConnection(parseInt(btn.dataset.id, 10)).finally(() => {
+          btn.classList.remove('spinning');
+        });
+      });
+    });
     devicesTbody.querySelectorAll('.btn-icon.edit').forEach(btn => {
       btn.addEventListener('click', () => openDeviceModal(parseInt(btn.dataset.id, 10)));
     });
@@ -1895,6 +2075,7 @@ document.addEventListener('DOMContentLoaded', () => {
   btnOpenDeviceModal?.addEventListener('click', () => openDeviceModal(null));
   btnCloseDeviceModal?.addEventListener('click', () => { deviceModal.style.display = 'none'; });
   btnCancelDevice?.addEventListener('click', () => { deviceModal.style.display = 'none'; });
+  deviceModal?.addEventListener('click', (e) => { if (e.target === deviceModal) deviceModal.style.display = 'none'; });
 
   btnSaveDevice?.addEventListener('click', async () => {
     const sn = deviceFormSn.value.trim();
@@ -1941,6 +2122,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  btnTestAllDevices?.addEventListener('click', () => {
+    showToast('Probing all clock connections (port 4370)...', 'info');
+    checkAllDeviceConnections();
+  });
+
   deviceSearchInput?.addEventListener('input', () => renderDevices(allDevices));
 
   // ─── 19. MODULE: USERS ADMINISTRATION (PERSONNEL) ─────────────────────────
@@ -1952,7 +2138,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnCloseUserModal = document.getElementById('btn-close-user-modal');
   const btnCancelUser = document.getElementById('btn-cancel-user');
   const btnSaveUser = document.getElementById('btn-save-user');
-  const btnOpenUserModal = document.getElementById('btn-open-user-modal');
+  const btnOpenUserModal = document.getElementById('btn-add-user') || document.getElementById('btn-open-user-modal');
   const userFormId = document.getElementById('user-form-id');
   const userFormBadge = document.getElementById('user-form-badge');
   const userFormName = document.getElementById('user-form-name');
@@ -2059,6 +2245,7 @@ document.addEventListener('DOMContentLoaded', () => {
   btnOpenUserModal?.addEventListener('click', () => openUserModal(null));
   btnCloseUserModal?.addEventListener('click', () => { userModal.style.display = 'none'; });
   btnCancelUser?.addEventListener('click', () => { userModal.style.display = 'none'; });
+  userModal?.addEventListener('click', (e) => { if (e.target === userModal) userModal.style.display = 'none'; });
 
   btnSaveUser?.addEventListener('click', async () => {
     const user_id = userFormId.value.trim();

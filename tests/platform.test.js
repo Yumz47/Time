@@ -362,6 +362,106 @@ test('System Users API: admin CRUD workflow', async () => {
   assert.equal(deleteRes.status, 200);
 });
 
+test('Clock Devices API: CRUD workflow', async () => {
+  const testSn = `TEST_SN_${Date.now()}`;
+
+  // 1. Create Device
+  const createRes = await fetch(`${BASE_URL}/api/devices`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sn: testSn,
+      alias: 'Test Entrance Clock',
+      ip_address: '10.10.61.99',
+      model: 'ZKTeco Test',
+      location: 'QA Testing Lab',
+      status: 'active'
+    })
+  });
+  assert.equal(createRes.status, 201);
+  const createData = await createRes.json();
+  assert.ok(createData.id);
+  const deviceId = createData.id;
+
+  // 2. Fetch Device
+  const getRes = await fetch(`${BASE_URL}/api/devices/${deviceId}`);
+  assert.equal(getRes.status, 200);
+  const deviceData = await getRes.json();
+  assert.equal(deviceData.sn, testSn);
+  assert.equal(deviceData.alias, 'Test Entrance Clock');
+
+  // 3. Update Device
+  const updateRes = await fetch(`${BASE_URL}/api/devices/${deviceId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sn: testSn,
+      alias: 'Updated Test Clock',
+      ip_address: '10.10.61.98',
+      model: 'ZKTeco Test v2',
+      location: 'QA Testing Lab 2',
+      status: 'inactive'
+    })
+  });
+  assert.equal(updateRes.status, 200);
+
+  // 4. Delete Device
+  const delRes = await fetch(`${BASE_URL}/api/devices/${deviceId}`, {
+    method: 'DELETE'
+  });
+  assert.equal(delRes.status, 200);
+});
+
+test('Frontend DOM & Controller Integrity: Add Device, Add User, and Connection Status column', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const indexHtml = fs.readFileSync(path.resolve(__dirname, '../public/index.html'), 'utf8');
+  const appJs = fs.readFileSync(path.resolve(__dirname, '../public/app.js'), 'utf8');
+
+  // Assert HTML elements exist
+  assert.ok(indexHtml.includes('id="btn-add-device"'), 'index.html must include id="btn-add-device"');
+  assert.ok(indexHtml.includes('id="btn-add-user"'), 'index.html must include id="btn-add-user"');
+  assert.ok(indexHtml.includes('id="device-modal"'), 'index.html must include id="device-modal"');
+  assert.ok(indexHtml.includes('<th>Connection</th>'), 'index.html must include Connection table header');
+  assert.ok(indexHtml.includes('id="btn-test-all-devices"'), 'index.html must include id="btn-test-all-devices"');
+
+  // Assert app.js queries and handlers
+  assert.ok(appJs.includes("document.getElementById('btn-add-device')"), 'app.js must bind to btn-add-device');
+  assert.ok(appJs.includes("document.getElementById('btn-add-user')"), 'app.js must bind to btn-add-user');
+  assert.ok(appJs.includes("document.getElementById('btn-test-all-devices')"), 'app.js must bind to btn-test-all-devices');
+  assert.ok(appJs.includes('getConnectionBadgeHtml'), 'app.js must implement getConnectionBadgeHtml');
+  assert.ok(appJs.includes('checkAllDeviceConnections'), 'app.js must implement checkAllDeviceConnections');
+});
+
+test('Clock Devices Live Connectivity API: single ping and bulk live-status workflow', async () => {
+  // 1. Bulk live-status endpoint
+  const bulkRes = await fetch(`${BASE_URL}/api/devices/live-status`);
+  assert.equal(bulkRes.status, 200);
+  const bulkData = await bulkRes.json();
+  assert.equal(bulkData.success, true);
+  assert.ok(bulkData.statuses);
+  assert.ok(typeof bulkData.statuses === 'object');
+
+  // Verify device 3 exists in statuses and has correct structure
+  if (bulkData.statuses[3]) {
+    assert.equal(typeof bulkData.statuses[3].connected, 'boolean');
+    assert.equal(typeof bulkData.statuses[3].latencyMs, 'number');
+    assert.equal(bulkData.statuses[3].sn, 'KWQ3241600155');
+  }
+
+  // 2. Single ping endpoint for device 3
+  const pingRes = await fetch(`${BASE_URL}/api/devices/3/ping`);
+  assert.equal(pingRes.status, 200);
+  const pingData = await pingRes.json();
+  assert.equal(pingData.id, 3);
+  assert.equal(typeof pingData.connected, 'boolean');
+  assert.equal(typeof pingData.latencyMs, 'number');
+
+  // 3. Ping non-existent device returns 404
+  const notFoundRes = await fetch(`${BASE_URL}/api/devices/999999/ping`);
+  assert.equal(notFoundRes.status, 404);
+});
+
 test('Serialization Integrity (Pickle Test Validation): user session & leave payload roundtrip', () => {
   const sessionPayload = {
     userId: 42,

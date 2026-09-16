@@ -5,6 +5,7 @@ const cors = require('cors');
 const cron = require('node-cron');
 const mysql = require('mysql2/promise');
 const crypto = require('crypto');
+const net = require('net');
 const { runSync } = require('../bridge/bridge');
 const { computeDailyAttendance } = require('../bridge/helpers');
 
@@ -1253,6 +1254,99 @@ app.post('/api/devices', async (req, res) => {
     if (err.code === 'ER_DUP_ENTRY') {
       return res.status(409).json({ error: `A device with SN "${sn}" already exists` });
     }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 10b. Helper to probe device socket on port 4370
+function probeDevice(ip, port = 4370, timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    if (!ip || typeof ip !== 'string' || !ip.trim()) {
+      return resolve({ connected: false, latencyMs: 0, error: 'No IP configured' });
+    }
+    const cleanIp = ip.trim();
+    const start = Date.now();
+    const socket = new net.Socket();
+    let settled = false;
+
+    socket.setTimeout(timeoutMs);
+
+    socket.connect(port, cleanIp, () => {
+      if (settled) return;
+      settled = true;
+      const latencyMs = Date.now() - start;
+      socket.destroy();
+      resolve({ connected: true, latencyMs });
+    });
+
+    socket.on('timeout', () => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve({ connected: false, latencyMs: Date.now() - start, error: 'Connection timed out' });
+    });
+
+    socket.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve({ connected: false, latencyMs: Date.now() - start, error: err.message });
+    });
+  });
+}
+
+// 10c. Live network connectivity status for all devices
+app.get('/api/devices/live-status', async (req, res) => {
+  try {
+    const [devices] = await pool.query('SELECT id, sn, alias, ip_address FROM devices');
+    const probePromises = devices.map(async (dev) => {
+      if (!dev.ip_address) {
+        return {
+          id: dev.id,
+          sn: dev.sn,
+          ip_address: null,
+          connected: false,
+          latencyMs: 0,
+          error: 'No IP configured'
+        };
+      }
+      const status = await probeDevice(dev.ip_address, 4370, 1500);
+      return {
+        id: dev.id,
+        sn: dev.sn,
+        ip_address: dev.ip_address,
+        ...status
+      };
+    });
+
+    const results = await Promise.all(probePromises);
+    const statusMap = {};
+    for (const r of results) {
+      statusMap[r.id] = r;
+    }
+    res.json({ success: true, statuses: statusMap });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 10d. Ping/Test connectivity of single device
+app.get('/api/devices/:id/ping', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT id, sn, alias, ip_address FROM devices WHERE id = ?', [parseInt(req.params.id, 10)]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Device not found' });
+    const dev = rows[0];
+    if (!dev.ip_address) {
+      return res.json({ id: dev.id, sn: dev.sn, ip_address: null, connected: false, latencyMs: 0, error: 'No IP configured' });
+    }
+    const result = await probeDevice(dev.ip_address, 4370, 1500);
+    res.json({
+      id: dev.id,
+      sn: dev.sn,
+      ip_address: dev.ip_address,
+      ...result
+    });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

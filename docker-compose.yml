@@ -19,6 +19,7 @@ services:
     ports:
       - "${PORT:-3000}:3000"
     environment:
+      - TZ=${TZ:-America/Belize}
       - NODE_ENV=${NODE_ENV:-production}
       - PORT=3000
       - DB_HOST=db
@@ -46,6 +47,7 @@ services:
     ports:
       - "${DB_PORT:-3306}:3306"
     environment:
+      TZ: ${TZ:-America/Belize}
       MYSQL_DATABASE: ${DB_NAME:-timeclock_db}
       MYSQL_USER: ${DB_USER:-timeclock_user}
       MYSQL_PASSWORD: ${DB_PASSWORD:-TimeClock@2026!}

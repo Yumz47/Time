@@ -11,6 +11,11 @@ att2000.mdb
 *.mdb
 *.accdb
 
+# Database dumps and backups
+*.sql
+!docker/
+!bridge/
+
 # Logs
 logs/
 *.log

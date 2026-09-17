@@ -11,6 +11,7 @@ RUN apk add --no-cache tzdata
 WORKDIR /app
 
 # Set default production environment
+ENV TZ=America/Belize
 ENV NODE_ENV=production
 ENV PORT=3000
 

@@ -6,8 +6,8 @@ const cron = require('node-cron');
 const mysql = require('mysql2/promise');
 const crypto = require('crypto');
 const net = require('net');
-const { runSync } = require('../bridge/bridge');
-const { computeDailyAttendance } = require('../bridge/helpers');
+const { computeDailyAttendance, resolveNormalizedType } = require('../bridge/helpers');
+const { syncSingleDevice, syncAllActiveDevices } = require('../bridge/device_sync');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -27,6 +27,7 @@ const pool = mysql.createPool({
   connectionLimit: 10,
   queueLimit: 0,
 });
+app.pool = pool;
 
 let isSyncInProgress = false;
 
@@ -252,12 +253,39 @@ app.get('/api/attendance/live', requireAuth, async (req, res) => {
       ORDER BY agg.last_punch_time DESC, e.name ASC
     `, params);
 
-    const data = rows.map(r => ({
-      ...r,
-      status: !r.last_punch_time ? 'absent'
-        : r.last_punch_type === 'out' ? 'out'
-        : 'in'
-    }));
+    const data = rows.map(r => {
+      const deptName = (!r.dept_name || r.dept_name === 'This Company') ? 'General Registry' : r.dept_name;
+
+      let status = 'absent';
+      if (r.last_punch_time) {
+        if (r.last_punch_type === 'out') {
+          status = 'out';
+        } else {
+          // Check if employee clocked out, has a late afternoon punch, or forgot to clock out after shift end
+          const firstInMs = r.first_in_time ? new Date(r.first_in_time).getTime() : 0;
+          const lastPunchDate = new Date(r.last_punch_time);
+          const gapHours = firstInMs ? (lastPunchDate.getTime() - firstInMs) / (1000 * 3600) : 0;
+          const localHour = lastPunchDate.getHours();
+
+          const now = new Date();
+          const targetIsPast = (targetDate < now.toISOString().split('T')[0]);
+          const currentHour = now.getHours() + now.getMinutes() / 60;
+          const shiftEndedToday = (targetDate === now.toISOString().split('T')[0] && currentHour >= 17.0);
+
+          if (targetIsPast || shiftEndedToday || (gapHours >= 4 && (localHour >= 16 || gapHours >= 7))) {
+            status = 'out';
+          } else {
+            status = 'in';
+          }
+        }
+      }
+
+      return {
+        ...r,
+        dept_name: deptName,
+        status,
+      };
+    });
 
     const summary = {
       total: data.length,
@@ -278,12 +306,16 @@ app.get('/api/attendance/live', requireAuth, async (req, res) => {
 // R1. Attendance summary (per employee, date range)
 app.get('/api/reports/attendance-summary', requireAuth, async (req, res) => {
   try {
-    const { from, to, deptId } = req.query;
+    const { from, to, deptId, search } = req.query;
     if (!from || !to) return res.status(400).json({ error: 'from and to are required' });
 
-    let deptFilter = '';
+    let filterSql = '';
     const params = [`${from} 00:00:00`, `${to} 23:59:59`];
-    if (deptId) { deptFilter = 'AND e.dept_id = ?'; params.push(parseInt(deptId, 10)); }
+    if (deptId) { filterSql += ' AND e.dept_id = ?'; params.push(parseInt(deptId, 10)); }
+    if (search && search.trim()) {
+      filterSql += ' AND (e.name LIKE ? OR e.badge_number LIKE ?)';
+      params.push(`%${search.trim()}%`, `%${search.trim()}%`);
+    }
 
     const [rows] = await pool.query(`
       SELECT
@@ -297,7 +329,7 @@ app.get('/api/reports/attendance-summary', requireAuth, async (req, res) => {
       FROM employees e
       LEFT JOIN departments d ON e.dept_id = d.dept_id
       LEFT JOIN checkinout c ON c.user_id = e.user_id AND c.check_time BETWEEN ? AND ?
-      WHERE 1=1 ${deptFilter}
+      WHERE 1=1 ${filterSql}
       GROUP BY e.user_id, e.name, e.badge_number, d.dept_name
       ORDER BY days_present DESC, e.name ASC
     `, params);
@@ -310,12 +342,16 @@ app.get('/api/reports/attendance-summary', requireAuth, async (req, res) => {
 // R2. Late arrivals
 app.get('/api/reports/late-arrivals', requireAuth, async (req, res) => {
   try {
-    const { from, to, threshold = '08:15', deptId } = req.query;
+    const { from, to, threshold = '08:15', deptId, search } = req.query;
     if (!from || !to) return res.status(400).json({ error: 'from and to are required' });
 
-    let deptFilter = '';
-    const params = [`${from} 00:00:00`, `${to} 23:59:59`, threshold];
-    if (deptId) { deptFilter = 'AND e.dept_id = ?'; params.push(parseInt(deptId, 10)); }
+    let filterSql = '';
+    const extraParams = [];
+    if (deptId) { filterSql += ' AND e.dept_id = ?'; extraParams.push(parseInt(deptId, 10)); }
+    if (search && search.trim()) {
+      filterSql += ' AND (e.name LIKE ? OR e.badge_number LIKE ?)';
+      extraParams.push(`%${search.trim()}%`, `%${search.trim()}%`);
+    }
 
     const [rows] = await pool.query(`
       SELECT
@@ -330,10 +366,10 @@ app.get('/api/reports/late-arrivals', requireAuth, async (req, res) => {
         AND c.normalized_type = 'in'
         AND TIME(c.check_time) > ?
         AND DAYOFWEEK(c.check_time) BETWEEN 2 AND 6
-        ${deptFilter}
+        ${filterSql}
       GROUP BY e.user_id, e.name, e.badge_number, d.dept_name, DATE(c.check_time)
       ORDER BY date DESC, minutes_late DESC
-    `, [threshold, `${from} 00:00:00`, `${to} 23:59:59`, threshold, ...params.slice(3)]);
+    `, [threshold, `${from} 00:00:00`, `${to} 23:59:59`, threshold, ...extraParams]);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -345,12 +381,17 @@ app.get('/api/reports/absent', requireAuth, async (req, res) => {
   try {
     const targetDate = req.query.date || new Date().toISOString().split('T')[0];
     const deptId = req.query.dept_id ? parseInt(req.query.dept_id, 10) : null;
+    const search = req.query.search;
     const startOfDay = `${targetDate} 00:00:00`;
     const endOfDay = `${targetDate} 23:59:59`;
 
-    let deptFilter = '';
+    let filterSql = '';
     const params = [startOfDay, endOfDay];
-    if (deptId) { deptFilter = 'AND e.dept_id = ?'; params.push(deptId); }
+    if (deptId) { filterSql += ' AND e.dept_id = ?'; params.push(deptId); }
+    if (search && search.trim()) {
+      filterSql += ' AND (e.name LIKE ? OR e.badge_number LIKE ?)';
+      params.push(`%${search.trim()}%`, `%${search.trim()}%`);
+    }
 
     const [rows] = await pool.query(`
       SELECT e.user_id, e.name, e.badge_number, d.dept_name,
@@ -361,7 +402,7 @@ app.get('/api/reports/absent', requireAuth, async (req, res) => {
       WHERE NOT EXISTS (
         SELECT 1 FROM checkinout c WHERE c.user_id = e.user_id AND c.check_time >= ? AND c.check_time <= ?
       )
-      ${deptFilter}
+      ${filterSql}
       GROUP BY e.user_id, e.name, e.badge_number, d.dept_name
       ORDER BY d.dept_name ASC, e.name ASC
     `, params);
@@ -374,12 +415,16 @@ app.get('/api/reports/absent', requireAuth, async (req, res) => {
 // R4. Overtime — employees who punched after threshold
 app.get('/api/reports/overtime', requireAuth, async (req, res) => {
   try {
-    const { from, to, threshold = '17:00', deptId } = req.query;
+    const { from, to, threshold = '17:00', deptId, search } = req.query;
     if (!from || !to) return res.status(400).json({ error: 'from and to are required' });
 
-    let deptFilter = '';
-    const params = [`${from} 00:00:00`, `${to} 23:59:59`, threshold];
-    if (deptId) { deptFilter = 'AND e.dept_id = ?'; params.push(parseInt(deptId, 10)); }
+    let filterSql = '';
+    const extraParams = [];
+    if (deptId) { filterSql += ' AND e.dept_id = ?'; extraParams.push(parseInt(deptId, 10)); }
+    if (search && search.trim()) {
+      filterSql += ' AND (e.name LIKE ? OR e.badge_number LIKE ?)';
+      extraParams.push(`%${search.trim()}%`, `%${search.trim()}%`);
+    }
 
     const [rows] = await pool.query(`
       SELECT
@@ -393,10 +438,10 @@ app.get('/api/reports/overtime', requireAuth, async (req, res) => {
       WHERE c.check_time BETWEEN ? AND ?
         AND TIME(c.check_time) > ?
         AND DAYOFWEEK(c.check_time) BETWEEN 2 AND 6
-        ${deptFilter}
+        ${filterSql}
       GROUP BY e.user_id, e.name, e.badge_number, d.dept_name, DATE(c.check_time)
       ORDER BY date DESC, overtime_duration DESC
-    `, [threshold, `${from} 00:00:00`, `${to} 23:59:59`, threshold, ...params.slice(3)]);
+    `, [threshold, `${from} 00:00:00`, `${to} 23:59:59`, threshold, ...extraParams]);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -484,7 +529,7 @@ app.get('/api/reports/export/csv', requireAuth, async (req, res) => {
 app.get('/api/shifts', requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(`
-      SELECT schClassid AS id, schClassid, schName AS name, schName AS SchName,
+      SELECT schClassid AS id, schClassid, schName, schName AS name, schName AS SchName,
              TIME(\`StartTime\`) AS start_time, \`StartTime\`,
              TIME(\`EndTime\`) AS end_time, \`EndTime\`,
              TIME(\`CheckInTime1\`) AS check_in_time1, \`CheckInTime1\`,
@@ -503,14 +548,178 @@ app.get('/api/shifts', requireAuth, async (req, res) => {
   }
 });
 
+function timeToDateTime(timeStr) {
+  if (!timeStr) return null;
+  const str = String(timeStr).trim();
+  const match = str.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return null;
+  const hours = match[1].padStart(2, '0');
+  const minutes = match[2].padStart(2, '0');
+  const seconds = (match[3] || '00').padStart(2, '0');
+  return `1899-12-30 ${hours}:${minutes}:${seconds}`;
+}
+
+function calcWorkMinutes(startTimeStr, endTimeStr) {
+  if (!startTimeStr || !endTimeStr) return 0;
+  const matchS = String(startTimeStr).match(/(\d{1,2}):(\d{2})/);
+  const matchE = String(endTimeStr).match(/(\d{1,2}):(\d{2})/);
+  if (!matchS || !matchE) return 0;
+  let sMins = parseInt(matchS[1], 10) * 60 + parseInt(matchS[2], 10);
+  let eMins = parseInt(matchE[1], 10) * 60 + parseInt(matchE[2], 10);
+  if (eMins < sMins) eMins += 24 * 60;
+  return eMins - sMins;
+}
+
+// S1-B. Create shift class
+app.post('/api/shifts', requireAdmin, async (req, res) => {
+  const name = req.body.name || req.body.schName;
+  const start_time = req.body.start_time || req.body.StartTime;
+  const end_time = req.body.end_time || req.body.EndTime;
+  const check_in_time1 = req.body.check_in_time1 || req.body.CheckInTime1;
+  const check_in_time2 = req.body.check_in_time2 || req.body.CheckInTime2;
+  const check_out_time1 = req.body.check_out_time1 || req.body.CheckOutTime1;
+  const check_out_time2 = req.body.check_out_time2 || req.body.CheckOutTime2;
+  const late_grace_minutes = req.body.late_grace_minutes ?? req.body.LateMinutes ?? 15;
+  const early_grace_minutes = req.body.early_grace_minutes ?? req.body.EarlyMinutes ?? 5;
+  const work_day_fraction = req.body.work_day_fraction ?? req.body.WorkDay ?? 1.0;
+  const work_minutes = req.body.work_minutes ?? req.body.WorkMins;
+
+  if (!name || !String(name).trim()) {
+    return res.status(400).json({ error: 'Shift name is required' });
+  }
+  if (!start_time || !end_time) {
+    return res.status(400).json({ error: 'start_time and end_time are required' });
+  }
+
+  try {
+    const [[maxRow]] = await pool.query('SELECT COALESCE(MAX(schClassid), 0) + 1 AS nextId FROM SchClass');
+    const newId = maxRow.nextId;
+
+    const sTime = timeToDateTime(start_time);
+    const eTime = timeToDateTime(end_time);
+    const in1 = check_in_time1 ? timeToDateTime(check_in_time1) : sTime;
+    const in2 = check_in_time2 ? timeToDateTime(check_in_time2) : sTime;
+    const out1 = check_out_time1 ? timeToDateTime(check_out_time1) : eTime;
+    const out2 = check_out_time2 ? timeToDateTime(check_out_time2) : eTime;
+    const wMins = (work_minutes != null && !isNaN(work_minutes)) ? Number(work_minutes) : calcWorkMinutes(start_time, end_time);
+
+    await pool.query(
+      `INSERT INTO SchClass (
+        schClassid, schName, StartTime, EndTime, LateMinutes, EarlyMinutes,
+        CheckIn, CheckOut, Color, AutoBind, CheckInTime1, CheckInTime2,
+        CheckOutTime1, CheckOutTime2, WorkDay, SensorID, WorkMins
+      ) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 16715535, 1, ?, ?, ?, ?, ?, null, ?)`,
+      [
+        newId,
+        String(name).trim(),
+        sTime,
+        eTime,
+        late_grace_minutes != null ? parseInt(late_grace_minutes, 10) : 15,
+        early_grace_minutes != null ? parseInt(early_grace_minutes, 10) : 5,
+        in1,
+        in2,
+        out1,
+        out2,
+        work_day_fraction != null ? parseFloat(work_day_fraction) : 1.0,
+        wMins
+      ]
+    );
+
+    res.status(201).json({ success: true, id: newId, shift_id: newId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// S1-C. Update shift class
+app.put('/api/shifts/:id', requireAdmin, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const name = req.body.name || req.body.schName;
+  const start_time = req.body.start_time || req.body.StartTime;
+  const end_time = req.body.end_time || req.body.EndTime;
+  const check_in_time1 = req.body.check_in_time1 || req.body.CheckInTime1;
+  const check_in_time2 = req.body.check_in_time2 || req.body.CheckInTime2;
+  const check_out_time1 = req.body.check_out_time1 || req.body.CheckOutTime1;
+  const check_out_time2 = req.body.check_out_time2 || req.body.CheckOutTime2;
+  const late_grace_minutes = req.body.late_grace_minutes ?? req.body.LateMinutes;
+  const early_grace_minutes = req.body.early_grace_minutes ?? req.body.EarlyMinutes;
+  const work_day_fraction = req.body.work_day_fraction ?? req.body.WorkDay;
+  const work_minutes = req.body.work_minutes ?? req.body.WorkMins;
+
+  if (!name || !String(name).trim()) {
+    return res.status(400).json({ error: 'Shift name is required' });
+  }
+
+  try {
+    const [existing] = await pool.query('SELECT * FROM SchClass WHERE schClassid = ?', [id]);
+    if (existing.length === 0) return res.status(404).json({ error: 'Shift class not found' });
+
+    const cur = existing[0];
+    const sTime = start_time ? timeToDateTime(start_time) : cur.StartTime;
+    const eTime = end_time ? timeToDateTime(end_time) : cur.EndTime;
+    const in1 = check_in_time1 ? timeToDateTime(check_in_time1) : cur.CheckInTime1;
+    const in2 = check_in_time2 ? timeToDateTime(check_in_time2) : cur.CheckInTime2;
+    const out1 = check_out_time1 ? timeToDateTime(check_out_time1) : cur.CheckOutTime1;
+    const out2 = check_out_time2 ? timeToDateTime(check_out_time2) : cur.CheckOutTime2;
+    const late = late_grace_minutes !== undefined ? parseInt(late_grace_minutes, 10) : cur.LateMinutes;
+    const early = early_grace_minutes !== undefined ? parseInt(early_grace_minutes, 10) : cur.EarlyMinutes;
+    const wDay = work_day_fraction !== undefined ? parseFloat(work_day_fraction) : cur.WorkDay;
+    const wMins = work_minutes !== undefined ? Number(work_minutes) : (start_time && end_time ? calcWorkMinutes(start_time, end_time) : cur.WorkMins);
+
+    await pool.query(
+      `UPDATE SchClass SET
+        schName = ?, StartTime = ?, EndTime = ?, CheckInTime1 = ?, CheckInTime2 = ?,
+        CheckOutTime1 = ?, CheckOutTime2 = ?, LateMinutes = ?, EarlyMinutes = ?,
+        WorkDay = ?, WorkMins = ?
+      WHERE schClassid = ?`,
+      [String(name).trim(), sTime, eTime, in1, in2, out1, out2, late, early, wDay, wMins, id]
+    );
+
+    if (start_time || end_time) {
+      await pool.query(
+        'UPDATE NUM_RUN_DEIL SET STARTTIME = ?, ENDTIME = ? WHERE SCHCLASSID = ?',
+        [sTime, eTime, id]
+      );
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// S1-D. Delete shift class
+app.delete('/api/shifts/:id', requireAdmin, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  try {
+    const [[usage]] = await pool.query(
+      'SELECT COUNT(*) AS count FROM NUM_RUN_DEIL WHERE SCHCLASSID = ?',
+      [id]
+    );
+    if (usage && usage.count > 0) {
+      return res.status(400).json({
+        error: `Cannot delete shift class because it is referenced in active schedules (${usage.count} schedule day rule(s)). Remove it from schedules first.`
+      });
+    }
+
+    const [result] = await pool.query('DELETE FROM SchClass WHERE schClassid = ?', [id]);
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Shift class not found' });
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // S2. Timetable / Schedule rotations
 app.get('/api/schedules', requireAuth, async (req, res) => {
   try {
     const [schedules] = await pool.query(`
-      SELECT n.NUM_RUNID AS id, n.NAME AS name,
+      SELECT n.NUM_RUNID AS id, n.NUM_RUNID, n.NAME AS name, n.NAME,
              DATE(n.STARTDATE) AS start_date, DATE(n.ENDDATE) AS end_date,
              n.CYLE AS cycle, n.UNITS AS units,
              COALESCE(u_cnt.cnt, 0) AS active_user_count,
+             COALESCE(u_cnt.cnt, 0) AS assigned_users_count,
              COALESCE(n.CYLE, 1) * COALESCE(n.UNITS, 1) AS cycle_days,
              CONCAT(COALESCE(n.CYLE, 1), ' ', CASE WHEN n.UNITS = 1 THEN 'Week(s)' WHEN n.UNITS = 2 THEN 'Month(s)' ELSE 'Day(s)' END) AS cycle_units
       FROM NUM_RUN n
@@ -542,6 +751,149 @@ app.get('/api/schedules', requireAuth, async (req, res) => {
   }
 });
 
+// S2-B. Create schedule rotation
+app.post('/api/schedules', requireAdmin, async (req, res) => {
+  const name = req.body.name || req.body.NAME;
+  const start_date = req.body.start_date || req.body.startDate;
+  const end_date = req.body.end_date || req.body.endDate;
+  const cycle = req.body.cycle;
+  const units = req.body.units;
+  const rawDetails = req.body.details || req.body.days || [];
+  if (!name || !String(name).trim()) {
+    return res.status(400).json({ error: 'Schedule name is required' });
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [[maxRow]] = await conn.query('SELECT COALESCE(MAX(NUM_RUNID), 0) + 1 AS nextId FROM NUM_RUN');
+    const newId = maxRow.nextId;
+
+    const sDate = start_date ? `${start_date} 00:00:00` : '2020-01-01 00:00:00';
+    const eDate = end_date ? `${end_date} 23:59:59` : '2200-12-31 23:59:59';
+
+    await conn.query(
+      'INSERT INTO NUM_RUN (NUM_RUNID, OLDID, NAME, STARTDATE, ENDDATE, CYLE, UNITS) VALUES (?, -1, ?, ?, ?, ?, ?)',
+      [newId, String(name).trim(), sDate, eDate, parseInt(cycle, 10) || 1, parseInt(units, 10) || 1]
+    );
+
+    if (Array.isArray(rawDetails) && rawDetails.length > 0) {
+      for (const d of rawDetails) {
+        const shiftId = d.shift_class_id || d.shift_id;
+        if (!shiftId) continue;
+        const [sch] = await conn.query('SELECT StartTime, EndTime FROM SchClass WHERE schClassid = ?', [shiftId]);
+        const sTime = d.start_time ? timeToDateTime(d.start_time) : (sch[0] ? sch[0].StartTime : timeToDateTime('08:00'));
+        const eTime = d.end_time ? timeToDateTime(d.end_time) : (sch[0] ? sch[0].EndTime : timeToDateTime('17:00'));
+        const sDay = d.start_day != null ? parseInt(d.start_day, 10) : (d.day_index != null ? parseInt(d.day_index, 10) : 1);
+        const eDay = d.end_day != null ? parseInt(d.end_day, 10) : sDay;
+
+        await conn.query(
+          'INSERT INTO NUM_RUN_DEIL (NUM_RUNID, STARTTIME, ENDTIME, SDAYS, EDAYS, SCHCLASSID, OverTime) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [newId, sTime, eTime, sDay, eDay, shiftId, d.overtime ? 1 : 0]
+        );
+      }
+    }
+
+    await conn.commit();
+    res.status(201).json({ success: true, id: newId, schedule_id: newId });
+  } catch (err) {
+    await conn.rollback();
+    res.status(500).json({ error: err.message });
+  } finally {
+    conn.release();
+  }
+});
+
+// S2-C. Update schedule rotation
+app.put('/api/schedules/:id', requireAdmin, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const name = req.body.name || req.body.NAME;
+  const start_date = req.body.start_date || req.body.startDate;
+  const end_date = req.body.end_date || req.body.endDate;
+  const cycle = req.body.cycle;
+  const units = req.body.units;
+  const rawDetails = req.body.details || req.body.days;
+  if (!name || !String(name).trim()) {
+    return res.status(400).json({ error: 'Schedule name is required' });
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [existing] = await conn.query('SELECT * FROM NUM_RUN WHERE NUM_RUNID = ?', [id]);
+    if (existing.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ error: 'Schedule not found' });
+    }
+
+    const cur = existing[0];
+    const sDate = start_date ? `${start_date} 00:00:00` : cur.STARTDATE;
+    const eDate = end_date ? `${end_date} 23:59:59` : cur.ENDDATE;
+    const cyle = cycle !== undefined ? parseInt(cycle, 10) : cur.CYLE;
+    const un = units !== undefined ? parseInt(units, 10) : cur.UNITS;
+
+    await conn.query(
+      'UPDATE NUM_RUN SET NAME = ?, STARTDATE = ?, ENDDATE = ?, CYLE = ?, UNITS = ? WHERE NUM_RUNID = ?',
+      [String(name).trim(), sDate, eDate, cyle, un, id]
+    );
+
+    if (Array.isArray(rawDetails)) {
+      await conn.query('DELETE FROM NUM_RUN_DEIL WHERE NUM_RUNID = ?', [id]);
+      for (const d of rawDetails) {
+        const shiftId = d.shift_class_id || d.shift_id;
+        if (!shiftId) continue;
+        const [sch] = await conn.query('SELECT StartTime, EndTime FROM SchClass WHERE schClassid = ?', [shiftId]);
+        const sTime = d.start_time ? timeToDateTime(d.start_time) : (sch[0] ? sch[0].StartTime : timeToDateTime('08:00'));
+        const eTime = d.end_time ? timeToDateTime(d.end_time) : (sch[0] ? sch[0].EndTime : timeToDateTime('17:00'));
+        const sDay = d.start_day != null ? parseInt(d.start_day, 10) : (d.day_index != null ? parseInt(d.day_index, 10) : 1);
+        const eDay = d.end_day != null ? parseInt(d.end_day, 10) : sDay;
+
+        await conn.query(
+          'INSERT INTO NUM_RUN_DEIL (NUM_RUNID, STARTTIME, ENDTIME, SDAYS, EDAYS, SCHCLASSID, OverTime) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [id, sTime, eTime, sDay, eDay, shiftId, d.overtime ? 1 : 0]
+        );
+      }
+    }
+
+    await conn.commit();
+    res.json({ success: true });
+  } catch (err) {
+    await conn.rollback();
+    res.status(500).json({ error: err.message });
+  } finally {
+    conn.release();
+  }
+});
+
+// S2-D. Delete schedule rotation
+app.delete('/api/schedules/:id', requireAdmin, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [existing] = await conn.query('SELECT * FROM NUM_RUN WHERE NUM_RUNID = ?', [id]);
+    if (existing.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ error: 'Schedule not found' });
+    }
+
+    await conn.query('DELETE FROM NUM_RUN_DEIL WHERE NUM_RUNID = ?', [id]);
+    await conn.query('DELETE FROM USER_OF_RUN WHERE NUM_OF_RUN_ID = ?', [id]);
+    await conn.query('DELETE FROM NUM_RUN WHERE NUM_RUNID = ?', [id]);
+
+    await conn.commit();
+    res.json({ success: true });
+  } catch (err) {
+    await conn.rollback();
+    res.status(500).json({ error: err.message });
+  } finally {
+    conn.release();
+  }
+});
+
 // S3. Employee assignments per schedule
 app.get('/api/schedules/:id/assignments', requireAuth, async (req, res) => {
   try {
@@ -556,6 +908,103 @@ app.get('/api/schedules/:id/assignments', requireAuth, async (req, res) => {
       ORDER BY e.name ASC
     `, [scheduleId]);
     res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// S3-B. Assign employees to schedule
+app.post('/api/schedules/:id/assignments', requireAdmin, async (req, res) => {
+  const scheduleId = parseInt(req.params.id, 10);
+  const rawUserIds = req.body.user_ids || req.body.userIds;
+  const rawUserId = req.body.user_id || req.body.userId;
+  const start_date = req.body.start_date || req.body.startDate;
+  const end_date = req.body.end_date || req.body.endDate;
+
+  let uids = [];
+  if (Array.isArray(rawUserIds)) {
+    uids = rawUserIds.map(u => parseInt(u, 10)).filter(u => !isNaN(u) && u > 0);
+  } else if (rawUserId) {
+    const uid = parseInt(rawUserId, 10);
+    if (!isNaN(uid) && uid > 0) uids.push(uid);
+  }
+
+  if (uids.length === 0) {
+    return res.status(400).json({ error: 'At least one valid user_id is required' });
+  }
+
+  const sDate = start_date ? `${start_date} 00:00:00` : new Date().toISOString().slice(0, 10) + ' 00:00:00';
+  const eDate = end_date ? `${end_date} 23:59:59` : '2200-12-31 23:59:59';
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [sched] = await conn.query('SELECT NUM_RUNID FROM NUM_RUN WHERE NUM_RUNID = ?', [scheduleId]);
+    if (sched.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ error: 'Schedule not found' });
+    }
+
+    for (const uid of uids) {
+      // Clean up any existing assignment for this user to avoid conflicts
+      await conn.query('DELETE FROM USER_OF_RUN WHERE USERID = ?', [uid]);
+      await conn.query(
+        'INSERT INTO USER_OF_RUN (USERID, NUM_OF_RUN_ID, STARTDATE, ENDDATE, ISNOTOF_RUN, ORDER_RUN) VALUES (?, ?, ?, ?, 0, 0)',
+        [uid, scheduleId, sDate, eDate]
+      );
+    }
+
+    await conn.commit();
+    res.json({ success: true, count: uids.length });
+  } catch (err) {
+    await conn.rollback();
+    res.status(500).json({ error: err.message });
+  } finally {
+    conn.release();
+  }
+});
+
+// S3-C. Unassign employee from schedule
+app.delete('/api/schedules/:id/assignments/:userId', requireAdmin, async (req, res) => {
+  const scheduleId = parseInt(req.params.id, 10);
+  const userId = parseInt(req.params.userId, 10);
+  try {
+    const [result] = await pool.query(
+      'DELETE FROM USER_OF_RUN WHERE NUM_OF_RUN_ID = ? AND USERID = ?',
+      [scheduleId, userId]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Assignment not found' });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// S3-D. Single employee schedule
+app.get('/api/employees/:id/schedule', requireAuth, async (req, res) => {
+  const userId = parseInt(req.params.id, 10);
+  try {
+    const [rows] = await pool.query(`
+      SELECT u.NUM_OF_RUN_ID AS schedule_id, n.NAME AS schedule_name,
+             DATE(u.STARTDATE) AS start_date, DATE(u.ENDDATE) AS end_date,
+             n.CYLE AS cycle, n.UNITS AS units
+      FROM USER_OF_RUN u
+      JOIN NUM_RUN n ON n.NUM_RUNID = u.NUM_OF_RUN_ID
+      WHERE u.USERID = ?
+      ORDER BY u.STARTDATE DESC
+      LIMIT 1
+    `, [userId]);
+    const sch = rows[0] || null;
+    res.json({
+      success: true,
+      schedule: sch,
+      schedule_id: sch ? sch.schedule_id : null,
+      schedule_name: sch ? sch.schedule_name : null,
+      ...(sch || {})
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -817,6 +1266,111 @@ app.delete('/api/punch-corrections/:id', requireAdmin, async (req, res) => {
   }
 });
 
+// ─── PUNCH RECONCILIATION ───────────────────────────────────────────────────
+
+/**
+ * POST /api/admin/reconcile-punches
+ * Admin-only. Re-classifies existing punches in [from, to] date range using the
+ * alternating toggle engine (hardware → toggle, 1-minute debounce). Only updates
+ * rows whose classification has changed, and returns a diff report.
+ *
+ * Body: { from: 'YYYY-MM-DD', to: 'YYYY-MM-DD', dryRun?: boolean }
+ */
+app.post('/api/admin/reconcile-punches', requireAdmin, async (req, res) => {
+  try {
+    const { from, to, dryRun = false } = req.body;
+    if (!from || !to) {
+      return res.status(400).json({ error: '"from" and "to" date fields are required (YYYY-MM-DD)' });
+    }
+
+    // Load all punches in range, sorted per user chronologically
+    const [punches] = await pool.query(
+      `SELECT id, user_id, check_time, check_type, normalized_type
+       FROM checkinout
+       WHERE check_time >= ? AND check_time <= ?
+       ORDER BY user_id ASC, check_time ASC`,
+      [`${from} 00:00:00`, `${to} 23:59:59`]
+    );
+
+    if (punches.length === 0) {
+      return res.json({ usersProcessed: 0, punchesScanned: 0, punchesReclassified: 0, changes: [], dryRun });
+    }
+
+    // Seed toggle state from the punch immediately before the range for each user
+    const userIds = [...new Set(punches.map(p => p.user_id))];
+    const placeholders = userIds.map(() => '?').join(',');
+    const [seedRows] = await pool.query(
+      `SELECT c.user_id, c.normalized_type, c.check_time
+       FROM checkinout c
+       INNER JOIN (
+         SELECT user_id, MAX(check_time) AS max_time
+         FROM checkinout
+         WHERE user_id IN (${placeholders}) AND check_time < ?
+         GROUP BY user_id
+       ) prev ON c.user_id = prev.user_id AND c.check_time = prev.max_time`,
+      [...userIds, `${from} 00:00:00`]
+    );
+    const seedMap = new Map();
+    for (const row of seedRows) {
+      seedMap.set(row.user_id, { lastType: row.normalized_type, lastTime: new Date(row.check_time) });
+    }
+
+    // Walk each punch in order, resolve correct type, collect changes
+    const changes = [];
+    const currentState = new Map(seedMap);
+
+    for (const punch of punches) {
+      const state = currentState.get(punch.user_id) || { lastType: null, lastTime: null };
+      const punchDate = new Date(punch.check_time);
+
+      // normalizedType stored in DB never carries explicit hardware inOutStatus,
+      // so always pass 0 (generic) — hardware signals were already applied on insert.
+      // Reconciliation recomputes purely from toggle + debounce.
+      const resolved = resolveNormalizedType(
+        state.lastType,
+        0,           // treat as generic for reconciliation
+        punchDate,
+        state.lastTime,
+        []           // no shift windows — toggle only
+      );
+
+      if (resolved !== punch.normalized_type) {
+        changes.push({
+          id:       punch.id,
+          user_id:  punch.user_id,
+          check_time: punch.check_time,
+          from:     punch.normalized_type,
+          to:       resolved,
+        });
+      }
+
+      // Update in-memory state regardless of whether there's a change
+      currentState.set(punch.user_id, { lastType: resolved, lastTime: punchDate });
+    }
+
+    // Apply changes (unless dry run)
+    if (!dryRun && changes.length > 0) {
+      for (const change of changes) {
+        const newCheckType = change.to === 'out' ? 'O' : 'I';
+        await pool.query(
+          'UPDATE checkinout SET check_type = ?, normalized_type = ? WHERE id = ?',
+          [newCheckType, change.to, change.id]
+        );
+      }
+    }
+
+    res.json({
+      usersProcessed:       userIds.length,
+      punchesScanned:       punches.length,
+      punchesReclassified:  changes.length,
+      dryRun,
+      changes,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 1. Health & Sync Status
 app.get('/api/status', async (req, res) => {
   try {
@@ -846,15 +1400,19 @@ app.get('/api/status', async (req, res) => {
   }
 });
 
-// 2. Trigger On-Demand Sync
+// 2. Trigger On-Demand Sync (Biometric Hardware Clocks)
 app.post('/api/sync', async (req, res) => {
   if (isSyncInProgress) {
     return res.status(409).json({ error: 'A sync is already in progress' });
   }
   isSyncInProgress = true;
   try {
-    const result = await runSync();
-    res.json({ success: true, result });
+    const deviceResult = await syncAllActiveDevices(pool);
+    res.json({
+      success: true,
+      result: deviceResult,
+      deviceResult,
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   } finally {
@@ -892,10 +1450,22 @@ app.get('/api/employees', async (req, res) => {
         e.gender,
         e.dept_id,
         d.dept_name,
+        u_sched.NUM_OF_RUN_ID AS schedule_id,
+        u_sched.schedule_name,
         latest.check_time AS last_punch_time,
         latest.normalized_type AS last_punch_type
       FROM employees e
       LEFT JOIN departments d ON e.dept_id = d.dept_id
+      LEFT JOIN (
+        SELECT u1.USERID, u1.NUM_OF_RUN_ID, n1.NAME AS schedule_name
+        FROM USER_OF_RUN u1
+        JOIN NUM_RUN n1 ON n1.NUM_RUNID = u1.NUM_OF_RUN_ID
+        INNER JOIN (
+          SELECT USERID, MAX(STARTDATE) AS max_start
+          FROM USER_OF_RUN
+          GROUP BY USERID
+        ) u2 ON u1.USERID = u2.USERID AND u1.STARTDATE = u2.max_start
+      ) u_sched ON e.user_id = u_sched.USERID
       LEFT JOIN (
         SELECT c1.user_id, c1.check_time, c1.normalized_type
         FROM checkinout c1
@@ -933,9 +1503,21 @@ app.get('/api/employees/:id', async (req, res) => {
   try {
     const userId = parseInt(req.params.id, 10);
     const [empRows] = await pool.query(`
-      SELECT e.*, d.dept_name 
+      SELECT e.*, d.dept_name,
+             u_sched.NUM_OF_RUN_ID AS schedule_id,
+             u_sched.schedule_name
       FROM employees e 
       LEFT JOIN departments d ON e.dept_id = d.dept_id 
+      LEFT JOIN (
+        SELECT u1.USERID, u1.NUM_OF_RUN_ID, n1.NAME AS schedule_name
+        FROM USER_OF_RUN u1
+        JOIN NUM_RUN n1 ON n1.NUM_RUNID = u1.NUM_OF_RUN_ID
+        INNER JOIN (
+          SELECT USERID, MAX(STARTDATE) AS max_start
+          FROM USER_OF_RUN
+          GROUP BY USERID
+        ) u2 ON u1.USERID = u2.USERID AND u1.STARTDATE = u2.max_start
+      ) u_sched ON e.user_id = u_sched.USERID
       WHERE e.user_id = ?
     `, [userId]);
 
@@ -952,11 +1534,17 @@ app.get('/api/employees/:id', async (req, res) => {
     `, [userId]);
 
     const dailyAttendance = computeDailyAttendance(punches);
-
+    const emp = empRows[0];
     res.json({
-      employee: empRows[0],
+      ...emp,
+      employee: emp,
       punches,
+      rawPunches: punches,
       dailyAttendance,
+      dailySummary: dailyAttendance.map(d => ({
+        ...d,
+        hours_worked: d.total_hours,
+      })),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1107,7 +1695,7 @@ app.get('/api/dashboard', async (req, res) => {
 // 8. Daily Attendance Reports (Paired First In / Last Out)
 app.get('/api/reports/daily', async (req, res) => {
   try {
-    const { from, to, deptId } = req.query;
+    const { from, to, deptId, search } = req.query;
     if (!from || !to) {
       return res.status(400).json({ error: 'from and to date parameters are required (YYYY-MM-DD)' });
     }
@@ -1130,6 +1718,11 @@ app.get('/api/reports/daily', async (req, res) => {
     if (deptId) {
       query += ` AND e.dept_id = ?`;
       params.push(parseInt(deptId, 10));
+    }
+
+    if (search && search.trim()) {
+      query += ` AND (e.name LIKE ? OR e.badge_number LIKE ?)`;
+      params.push(`%${search.trim()}%`, `%${search.trim()}%`);
     }
 
     query += ` ORDER BY c.user_id ASC, c.check_time ASC`;
@@ -1165,6 +1758,7 @@ app.get('/api/reports/daily', async (req, res) => {
           last_out: day.last_out,
           punch_count: day.punch_count,
           total_hours: day.total_hours,
+          is_auto_out: day.is_auto_out || false,
         });
       }
     }
@@ -1351,6 +1945,33 @@ app.get('/api/devices/:id/ping', async (req, res) => {
   }
 });
 
+// 10e. Direct network sync for a single device (port 4370)
+app.post('/api/devices/:id/sync', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const [rows] = await pool.query('SELECT * FROM devices WHERE id = ?', [id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Device not found' });
+    const dev = rows[0];
+    if (!dev.ip_address) {
+      return res.status(400).json({ error: 'Device has no IP address configured' });
+    }
+    const result = await syncSingleDevice(dev, pool);
+    res.json({ success: true, result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 10f. Direct network sync for all active devices
+app.post('/api/devices/sync-all', async (req, res) => {
+  try {
+    const result = await syncAllActiveDevices(pool);
+    res.json({ success: true, result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // 11. Get single device
 app.get('/api/devices/:id', async (req, res) => {
   try {
@@ -1473,6 +2094,17 @@ app.post('/api/employees', async (req, res) => {
         dept_id ? parseInt(dept_id, 10) : null,
       ]
     );
+
+    if (req.body.schedule_id) {
+      const schedId = parseInt(req.body.schedule_id, 10);
+      if (!isNaN(schedId) && schedId > 0) {
+        await pool.query(
+          'INSERT INTO USER_OF_RUN (USERID, NUM_OF_RUN_ID, STARTDATE, ENDDATE, ISNOTOF_RUN, ORDER_RUN) VALUES (?, ?, CURDATE(), "2200-12-31 23:59:59", 0, 0)',
+          [uid, schedId]
+        );
+      }
+    }
+
     res.status(201).json({ success: true });
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') {
@@ -1485,7 +2117,7 @@ app.post('/api/employees', async (req, res) => {
 // 16. Update a user/employee
 app.put('/api/employees/:id', async (req, res) => {
   const userId = parseInt(req.params.id, 10);
-  const { badge_number, name, gender, dept_id } = req.body;
+  const { badge_number, name, gender, dept_id, schedule_id } = req.body;
   if (!name || !String(name).trim()) {
     return res.status(400).json({ error: 'Full name is required' });
   }
@@ -1501,6 +2133,18 @@ app.put('/api/employees/:id', async (req, res) => {
       ]
     );
     if (result.affectedRows === 0) return res.status(404).json({ error: 'User not found' });
+
+    if (schedule_id !== undefined) {
+      await pool.query('DELETE FROM USER_OF_RUN WHERE USERID = ?', [userId]);
+      const schedId = parseInt(schedule_id, 10);
+      if (!isNaN(schedId) && schedId > 0) {
+        await pool.query(
+          'INSERT INTO USER_OF_RUN (USERID, NUM_OF_RUN_ID, STARTDATE, ENDDATE, ISNOTOF_RUN, ORDER_RUN) VALUES (?, ?, CURDATE(), "2200-12-31 23:59:59", 0, 0)',
+          [userId, schedId]
+        );
+      }
+    }
+
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1510,6 +2154,7 @@ app.put('/api/employees/:id', async (req, res) => {
 // 17. Delete a user/employee (cascades to checkinout via FK)
 app.delete('/api/employees/:id', async (req, res) => {
   try {
+    await pool.query('DELETE FROM USER_OF_RUN WHERE USERID = ?', [parseInt(req.params.id, 10)]);
     const [result] = await pool.query('DELETE FROM employees WHERE user_id = ?', [parseInt(req.params.id, 10)]);
     if (result.affectedRows === 0) return res.status(404).json({ error: 'User not found' });
     res.json({ success: true });
@@ -1518,23 +2163,20 @@ app.delete('/api/employees/:id', async (req, res) => {
   }
 });
 
-// Setup scheduled cron if enabled
-const cronPattern = process.env.SYNC_CRON;
-if (cronPattern && cronPattern.trim().toLowerCase() !== 'disabled') {
-  console.log(`[Server] Scheduling automated sync with cron: "${cronPattern}"`);
-  cron.schedule(cronPattern, async () => {
-    console.log('[Cron] Executing scheduled Access -> MySQL sync...');
-    if (isSyncInProgress) {
-      console.log('[Cron] Sync already running. Skipping.');
-      return;
-    }
-    isSyncInProgress = true;
+// Automated direct hardware device sync (Port 4370 -> MySQL)
+// Legacy Access MDB sync has been decommissioned in favor of direct clock communication.
+
+// Setup scheduled direct hardware device sync if enabled (Port 4370 -> MySQL)
+const deviceCronPattern = process.env.DEVICE_SYNC_CRON;
+let deviceCronJob = null;
+if (process.env.NODE_ENV !== 'test' && deviceCronPattern && deviceCronPattern.trim().toLowerCase() !== 'disabled') {
+  console.log(`[Server] Scheduling automated direct device sync with cron: "${deviceCronPattern}"`);
+  deviceCronJob = cron.schedule(deviceCronPattern, async () => {
+    console.log('[Cron] Executing scheduled direct ZKTeco hardware -> MySQL sync...');
     try {
-      await runSync();
+      await syncAllActiveDevices(pool);
     } catch (e) {
-      console.error('[Cron] Scheduled sync failed:', e.message);
-    } finally {
-      isSyncInProgress = false;
+      console.error('[Cron] Scheduled direct device sync failed:', e.message);
     }
   });
 }

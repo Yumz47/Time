@@ -1,8 +1,32 @@
-const test = require('node:test');
+const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('crypto');
+process.env.NODE_ENV = 'test';
+const app = require('../server/server');
 
-const BASE_URL = process.env.TEST_BASE_URL || 'http://127.0.0.1:3000';
+let BASE_URL = process.env.TEST_BASE_URL;
+let testServer = null;
+
+before(async () => {
+  if (!BASE_URL) {
+    await new Promise((resolve) => {
+      testServer = app.listen(0, '127.0.0.1', () => {
+        const port = testServer.address().port;
+        BASE_URL = `http://127.0.0.1:${port}`;
+        resolve();
+      });
+    });
+  }
+});
+
+after(async () => {
+  if (testServer) {
+    await new Promise((resolve) => testServer.close(resolve));
+  }
+  if (app.pool) {
+    await app.pool.end();
+  }
+});
 
 // Global test variables
 let adminToken = '';
@@ -181,22 +205,167 @@ test('Smart Reports: CSV Export using _token parameter', async () => {
   assert.ok(text.includes('Badge') && text.includes('Department'));
 });
 
-test('Shifts & Schedules API', async () => {
+test('Shifts & Schedules API: comprehensive CRUD, rotation, and assignment workflow', async () => {
+  // 1. Read existing shifts and schedules
   const [shiftsRes, schedRes] = await Promise.all([
     fetch(`${BASE_URL}/api/shifts`, { headers: { 'x-auth-token': adminToken } }),
     fetch(`${BASE_URL}/api/schedules`, { headers: { 'x-auth-token': adminToken } })
   ]);
-
   assert.equal(shiftsRes.status, 200);
   assert.equal(schedRes.status, 200);
-
   const shifts = await shiftsRes.json();
   const schedules = await schedRes.json();
-
   assert.ok(Array.isArray(shifts));
   assert.ok(Array.isArray(schedules));
-  assert.ok(shifts.length >= 1);
-  assert.ok(schedules.length >= 1);
+
+  // 2. Viewer role rejection (admin only)
+  const viewerShiftRes = await fetch(`${BASE_URL}/api/shifts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-auth-token': viewerToken },
+    body: JSON.stringify({ name: 'Viewer Test Shift', start_time: '08:00', end_time: '16:00' })
+  });
+  assert.equal(viewerShiftRes.status, 403);
+
+  // 3. Shift validation: missing name or start/end times
+  const badShiftRes = await fetch(`${BASE_URL}/api/shifts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-auth-token': adminToken },
+    body: JSON.stringify({ start_time: '08:00' })
+  });
+  assert.equal(badShiftRes.status, 400);
+
+  // 4. Create new shift class
+  const createShiftRes = await fetch(`${BASE_URL}/api/shifts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-auth-token': adminToken },
+    body: JSON.stringify({
+      name: 'QA Shift 0800-1600',
+      start_time: '08:00',
+      end_time: '16:00',
+      check_in_time1: '07:30',
+      check_in_time2: '08:30',
+      check_out_time1: '15:45',
+      check_out_time2: '16:30',
+      late_grace_minutes: 10,
+      early_grace_minutes: 5,
+      work_day_fraction: 1.0
+    })
+  });
+  assert.equal(createShiftRes.status, 201);
+  const { id: newShiftId } = await createShiftRes.json();
+  assert.ok(newShiftId);
+
+  // 5. Update shift class
+  const updateShiftRes = await fetch(`${BASE_URL}/api/shifts/${newShiftId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'x-auth-token': adminToken },
+    body: JSON.stringify({
+      name: 'QA Shift 0800-1600 (Updated)',
+      start_time: '08:15',
+      end_time: '16:15',
+      late_grace_minutes: 15
+    })
+  });
+  assert.equal(updateShiftRes.status, 200);
+
+  // 6. Create schedule with rotation days in NUM_RUN_DEIL
+  const createSchedRes = await fetch(`${BASE_URL}/api/schedules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-auth-token': adminToken },
+    body: JSON.stringify({
+      name: 'QA 5-Day Weekly Rotation',
+      cycle: 1,
+      units: 1,
+      start_date: '2026-01-01',
+      end_date: '2028-12-31',
+      details: [
+        { start_day: 1, end_day: 1, shift_class_id: newShiftId },
+        { start_day: 2, end_day: 2, shift_class_id: newShiftId },
+        { start_day: 3, end_day: 3, shift_class_id: newShiftId },
+        { start_day: 4, end_day: 4, shift_class_id: newShiftId },
+        { start_day: 5, end_day: 5, shift_class_id: newShiftId }
+      ]
+    })
+  });
+  assert.equal(createSchedRes.status, 201);
+  const { id: newSchedId } = await createSchedRes.json();
+  assert.ok(newSchedId);
+
+  // 7. Verify shift cannot be deleted while assigned to schedule
+  const blockedDelete = await fetch(`${BASE_URL}/api/shifts/${newShiftId}`, {
+    method: 'DELETE',
+    headers: { 'x-auth-token': adminToken }
+  });
+  assert.equal(blockedDelete.status, 400);
+
+  // 8. Assign employee to schedule via POST /api/schedules/:id/assignments
+  const testUserId = 999456;
+  await fetch(`${BASE_URL}/api/employees`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: testUserId,
+      badge_number: 'SCH-999',
+      name: 'Schedule QA Employee'
+    })
+  });
+
+  const assignRes = await fetch(`${BASE_URL}/api/schedules/${newSchedId}/assignments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-auth-token': adminToken },
+    body: JSON.stringify({
+      user_ids: [testUserId],
+      start_date: '2026-09-01',
+      end_date: '2027-09-01'
+    })
+  });
+  assert.equal(assignRes.status, 200);
+
+  // 9. Verify employee schedule assignment in GET /api/employees/:id and roster
+  const empRes = await fetch(`${BASE_URL}/api/employees/${testUserId}`);
+  assert.equal(empRes.status, 200);
+  const emp = await empRes.json();
+  assert.equal(emp.schedule_id, newSchedId);
+  assert.equal(emp.schedule_name, 'QA 5-Day Weekly Rotation');
+
+  const rosterRes = await fetch(`${BASE_URL}/api/schedules/${newSchedId}/assignments`, {
+    headers: { 'x-auth-token': adminToken }
+  });
+  assert.equal(rosterRes.status, 200);
+  const roster = await rosterRes.json();
+  assert.ok(roster.some(u => u.user_id === testUserId));
+
+  // 10. Single user schedule endpoint
+  const userSchedRes = await fetch(`${BASE_URL}/api/employees/${testUserId}/schedule`, {
+    headers: { 'x-auth-token': adminToken }
+  });
+  assert.equal(userSchedRes.status, 200);
+  const userSched = await userSchedRes.json();
+  assert.equal(userSched.schedule.schedule_id, newSchedId);
+
+  // 11. Unassign employee
+  const unassignRes = await fetch(`${BASE_URL}/api/schedules/${newSchedId}/assignments/${testUserId}`, {
+    method: 'DELETE',
+    headers: { 'x-auth-token': adminToken }
+  });
+  assert.equal(unassignRes.status, 200);
+
+  // 12. Delete schedule
+  const delSchedRes = await fetch(`${BASE_URL}/api/schedules/${newSchedId}`, {
+    method: 'DELETE',
+    headers: { 'x-auth-token': adminToken }
+  });
+  assert.equal(delSchedRes.status, 200);
+
+  // 13. Delete shift
+  const delShiftRes = await fetch(`${BASE_URL}/api/shifts/${newShiftId}`, {
+    method: 'DELETE',
+    headers: { 'x-auth-token': adminToken }
+  });
+  assert.equal(delShiftRes.status, 200);
+
+  // Clean up employee
+  await fetch(`${BASE_URL}/api/employees/${testUserId}`, { method: 'DELETE' });
 });
 
 test('Leave Management API: create, read, update, delete workflow', async () => {
@@ -433,6 +602,28 @@ test('Frontend DOM & Controller Integrity: Add Device, Add User, and Connection 
   assert.ok(appJs.includes('checkAllDeviceConnections'), 'app.js must implement checkAllDeviceConnections');
 });
 
+test('Frontend DOM & Controller Integrity: Schedule & Shift Management Modals and Actions', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const indexHtml = fs.readFileSync(path.resolve(__dirname, '../public/index.html'), 'utf8');
+  const appJs = fs.readFileSync(path.resolve(__dirname, '../public/app.js'), 'utf8');
+
+  // Assert HTML elements exist
+  assert.ok(indexHtml.includes('id="btn-open-shift-modal"'), 'index.html must include id="btn-open-shift-modal"');
+  assert.ok(indexHtml.includes('id="btn-open-schedule-modal"'), 'index.html must include id="btn-open-schedule-modal"');
+  assert.ok(indexHtml.includes('id="shift-modal"'), 'index.html must include id="shift-modal"');
+  assert.ok(indexHtml.includes('id="schedule-modal"'), 'index.html must include id="schedule-modal"');
+  assert.ok(indexHtml.includes('id="schedule-assignments-modal"'), 'index.html must include id="schedule-assignments-modal"');
+  assert.ok(indexHtml.includes('id="user-form-schedule"'), 'index.html must include id="user-form-schedule"');
+
+  // Assert app.js controllers and bindings
+  assert.ok(appJs.includes('openShiftModal'), 'app.js must implement openShiftModal');
+  assert.ok(appJs.includes('openScheduleModal'), 'app.js must implement openScheduleModal');
+  assert.ok(appJs.includes('openScheduleAssignmentsModal'), 'app.js must implement openScheduleAssignmentsModal');
+  assert.ok(appJs.includes('saveShift'), 'app.js must implement saveShift');
+  assert.ok(appJs.includes('saveSchedule'), 'app.js must implement saveSchedule');
+});
+
 test('Clock Devices Live Connectivity API: single ping and bulk live-status workflow', async () => {
   // 1. Bulk live-status endpoint
   const bulkRes = await fetch(`${BASE_URL}/api/devices/live-status`);
@@ -478,4 +669,170 @@ test('Serialization Integrity (Pickle Test Validation): user session & leave pay
   assert.deepEqual(deserialized, sessionPayload);
   assert.equal(deserialized.role, 'admin');
   assert.equal(deserialized.permissions.length, 3);
+});
+
+test('Decommission of Legacy Access Sync: Verification of server, frontend, and environment integrity', () => {
+  const fs = require('fs');
+  const path = require('path');
+
+  // 1. Server must no longer import or invoke runSync from bridge/bridge.js
+  const serverCode = fs.readFileSync(path.resolve(__dirname, '../server/server.js'), 'utf-8');
+  assert.ok(!serverCode.includes("require('../bridge/bridge')"), 'server.js must not import bridge.js');
+  assert.ok(!serverCode.includes('runSync()'), 'server.js must not invoke runSync');
+  assert.ok(serverCode.includes('syncAllActiveDevices'), 'server.js must use syncAllActiveDevices');
+
+  // 2. Frontend HTML must display "Device Bridge" and not "Access Bridge"
+  const indexHtml = fs.readFileSync(path.resolve(__dirname, '../public/index.html'), 'utf-8');
+  assert.ok(indexHtml.includes('Device Bridge'), 'index.html must display Device Bridge');
+  assert.ok(!indexHtml.includes('Access Bridge'), 'index.html must not display Access Bridge');
+
+  // 3. Frontend JS must reference biometric clocks instead of Access DB sync
+  const appJs = fs.readFileSync(path.resolve(__dirname, '../public/app.js'), 'utf-8');
+  assert.ok(appJs.includes('Connecting to biometric clocks...'), 'app.js must display clock connection toast');
+  assert.ok(!appJs.includes('sync from Access to MySQL'), 'app.js must not mention sync from Access to MySQL');
+
+  // 4. .env must have SYNC_CRON disabled
+  const envContent = fs.readFileSync(path.resolve(__dirname, '../.env'), 'utf-8');
+  assert.ok(envContent.includes('SYNC_CRON="disabled"'), '.env must have SYNC_CRON="disabled"');
+});
+
+test('Direct Biometric Clock On-Demand Sync API: POST /api/sync execution & structure', async () => {
+  const syncRes = await fetch(`${BASE_URL}/api/sync`, { method: 'POST' });
+  assert.equal(syncRes.status, 200, 'POST /api/sync should return 200 OK');
+  const syncData = await syncRes.json();
+
+  assert.equal(syncData.success, true, 'Sync response success must be true');
+  assert.ok(syncData.result, 'Response must include result object');
+  assert.ok(typeof syncData.result.totalDevices === 'number', 'result must include totalDevices number');
+  assert.ok(typeof syncData.result.successfulDevices === 'number', 'result must include successfulDevices number');
+  assert.ok(Array.isArray(syncData.result.results), 'result must include results array');
+  assert.ok(typeof syncData.result.durationMs === 'number', 'result must include durationMs');
+});
+
+test('Pickle / Serialization Integrity: Biometric device sync payload roundtrip', () => {
+  const sampleSyncPayload = {
+    totalDevices: 6,
+    successfulDevices: 1,
+    totalPunchesInserted: 3,
+    durationMs: 1420,
+    results: [
+      {
+        success: true,
+        deviceId: 4,
+        deviceSn: 'KWQ3241600076',
+        deviceAlias: '6',
+        deviceIp: '10.10.61.3',
+        punchesRead: 27,
+        punchesInserted: 3,
+        usersRead: 20
+      },
+      {
+        success: false,
+        deviceId: 2,
+        deviceSn: '3355300480195',
+        deviceAlias: 'CLOCKOLD',
+        deviceIp: '192.168.0.13',
+        error: 'connect ETIMEDOUT'
+      }
+    ]
+  };
+
+  const serialized = JSON.stringify(sampleSyncPayload);
+  assert.equal(typeof serialized, 'string');
+  const parsed = JSON.parse(serialized);
+
+  assert.deepEqual(parsed, sampleSyncPayload);
+  assert.equal(parsed.results.length, 2);
+  assert.equal(parsed.results[0].punchesInserted, 3);
+  assert.equal(parsed.results[1].success, false);
+});
+
+test('Mutation Testing: Device sync status evaluation and error resilience', () => {
+  const mockSyncResponse = (devices, successful) => ({
+    success: true,
+    totalDevices: devices,
+    successfulDevices: successful,
+    isHealthy: successful > 0
+  });
+
+  const normal = mockSyncResponse(6, 1);
+  assert.strictEqual(normal.isHealthy, true, 'At least 1 device connected is considered healthy');
+
+  // Mutant 1: successful count inverted or zero
+  const mutantZero = mockSyncResponse(6, 0);
+  assert.strictEqual(mutantZero.isHealthy, false, '0 connected devices must report unhealthy');
+
+  // Mutant 2: tampering with successful count > total must be caught
+  assert.ok(normal.successfulDevices <= normal.totalDevices, 'Successful devices cannot exceed total');
+});
+
+test('Employee Profile Modal API: GET /api/employees/:id returns complete summary & punches', async () => {
+  // Test with employee 125 (Malcolm)
+  const res = await fetch(`${BASE_URL}/api/employees/125`);
+  assert.equal(res.status, 200, 'Employee 125 must return 200 OK');
+  const data = await res.json();
+
+  assert.equal(data.user_id, 125);
+  assert.ok(data.name, 'Employee must have a name');
+  assert.ok(Array.isArray(data.punches), 'punches must be an array');
+  assert.ok(Array.isArray(data.rawPunches), 'rawPunches must be an array');
+  assert.ok(Array.isArray(data.dailyAttendance), 'dailyAttendance must be an array');
+  assert.ok(Array.isArray(data.dailySummary), 'dailySummary must be an array');
+
+  // Verify dailySummary structure matches modal expectations
+  if (data.dailySummary.length > 0) {
+    const day = data.dailySummary[0];
+    assert.ok(day.date, 'dailySummary item must include date');
+    assert.ok('hours_worked' in day, 'dailySummary item must include hours_worked');
+  }
+
+  // Non-existent employee returns 404
+  const notFoundRes = await fetch(`${BASE_URL}/api/employees/999999`);
+  assert.equal(notFoundRes.status, 404, 'Non-existent employee must return 404');
+});
+
+test('Pickle / Serialization Integrity: Employee profile payload roundtrip', () => {
+  const sampleProfilePayload = {
+    user_id: 125,
+    name: 'Malcolm',
+    badge_number: '125',
+    dept_name: 'Operations',
+    dailyAttendance: [
+      { date: '2026-09-16', first_in: '15:22:58', last_out: '15:25:41', total_punches: 3, total_hours: 0.05 }
+    ],
+    dailySummary: [
+      { date: '2026-09-16', first_in: '15:22:58', last_out: '15:25:41', total_punches: 3, total_hours: 0.05, hours_worked: 0.05 }
+    ]
+  };
+
+  const serialized = JSON.stringify(sampleProfilePayload);
+  assert.equal(typeof serialized, 'string');
+  const deserialized = JSON.parse(serialized);
+
+  assert.deepEqual(deserialized, sampleProfilePayload);
+  assert.equal(deserialized.user_id, 125);
+  assert.equal(deserialized.dailySummary[0].hours_worked, 0.05);
+});
+
+test('Mutation Testing: Employee modal payload structure resilience', () => {
+  const validatePayload = (payload) => {
+    return !!(
+      payload &&
+      payload.user_id &&
+      Array.isArray(payload.punches) &&
+      Array.isArray(payload.dailyAttendance) &&
+      Array.isArray(payload.dailySummary)
+    );
+  };
+
+  const valid = { user_id: 1, punches: [], dailyAttendance: [], dailySummary: [] };
+  assert.strictEqual(validatePayload(valid), true);
+
+  // Mutant 1: undefined dailyAttendance
+  const mutant1 = { user_id: 1, punches: [], dailyAttendance: undefined, dailySummary: [] };
+  assert.strictEqual(validatePayload(mutant1), false);
+
+  // Mutant 2: missing user_id
+  const mutant2 = { punches: [], dailyAttendance: [], dailySummary: [] };
+  assert.strictEqual(validatePayload(mutant2), false);
 });

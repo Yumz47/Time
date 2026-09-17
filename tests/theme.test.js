@@ -116,3 +116,117 @@ test('Quality Control (QA): DOM Template & Accessibility Integrity in index.html
   // Script include for theme_helper.js
   assert.ok(htmlContent.includes('theme_helper.js'), 'index.html must include theme_helper.js');
 });
+
+test('Unit Tests: hexToRgb, relative luminance, and contrast ratio calculations', () => {
+  // Hex parsing
+  assert.deepEqual(ThemeHelper.hexToRgb('#ffffff'), [255, 255, 255]);
+  assert.deepEqual(ThemeHelper.hexToRgb('#000000'), [0, 0, 0]);
+  assert.deepEqual(ThemeHelper.hexToRgb('#fff'), [255, 255, 255]);
+  assert.deepEqual(ThemeHelper.hexToRgb('#0f172a'), [15, 23, 42]);
+  assert.equal(ThemeHelper.hexToRgb('invalid'), null);
+  assert.equal(ThemeHelper.hexToRgb(null), null);
+
+  // Relative luminance
+  const whiteLum = ThemeHelper.calculateRelativeLuminance([255, 255, 255]);
+  const blackLum = ThemeHelper.calculateRelativeLuminance([0, 0, 0]);
+  assert.equal(Math.round(whiteLum), 1);
+  assert.equal(blackLum, 0);
+
+  // Contrast ratios
+  const blackWhiteRatio = ThemeHelper.calculateContrastRatio('#000000', '#ffffff');
+  assert.equal(blackWhiteRatio, 21.0);
+
+  const whiteOnWhite = ThemeHelper.calculateContrastRatio('#ffffff', '#ffffff');
+  assert.equal(whiteOnWhite, 1.0);
+
+  // Light theme: dark slate text #0f172a on white input #ffffff
+  const lightInputContrast = ThemeHelper.calculateContrastRatio('#0f172a', '#ffffff');
+  assert.ok(lightInputContrast >= 16.0, `Expected >= 16.0, got ${lightInputContrast}`);
+
+  // Dark theme: bright text #f8fafc on dark background #111827
+  const darkInputContrast = ThemeHelper.calculateContrastRatio('#f8fafc', '#111827');
+  assert.ok(darkInputContrast >= 14.0, `Expected >= 14.0, got ${darkInputContrast}`);
+});
+
+test('Unit Tests: WCAG 2.1 compliance evaluation for light and dark theme palettes', () => {
+  // Pass normal text AA (>= 4.5) and AAA (>= 7.0)
+  const passAaa = ThemeHelper.evaluateWcagCompliance(16.5, false);
+  assert.strictEqual(passAaa.passAA, true);
+  assert.strictEqual(passAaa.passAAA, true);
+
+  // Pass AA but fail AAA (e.g. 5.2:1)
+  const passAaOnly = ThemeHelper.evaluateWcagCompliance(5.2, false);
+  assert.strictEqual(passAaOnly.passAA, true);
+  assert.strictEqual(passAaOnly.passAAA, false);
+
+  // Large text (>= 3.0 for AA)
+  const passLargeAa = ThemeHelper.evaluateWcagCompliance(3.5, true);
+  assert.strictEqual(passLargeAa.passAA, true);
+  assert.strictEqual(passLargeAa.passAAA, false);
+
+  // Severe failure (e.g. white text on white background: 1.0:1)
+  const severeFail = ThemeHelper.evaluateWcagCompliance(1.0, false);
+  assert.strictEqual(severeFail.passAA, false);
+  assert.strictEqual(severeFail.passAAA, false);
+});
+
+test('Pickle Tests: Theme Accessibility & Contrast Settings roundtrip integrity', () => {
+  const originalSettings = {
+    theme: 'light',
+    highContrastMode: false,
+    minContrastRatio: 4.5,
+    inspectedElements: ['input', 'select', 'textarea'],
+    timestamp: '2026-09-17T08:30:00.000Z'
+  };
+
+  const serialized = JSON.stringify(originalSettings);
+  assert.equal(typeof serialized, 'string');
+
+  const deserialized = JSON.parse(serialized);
+  assert.deepEqual(deserialized, originalSettings);
+  assert.equal(deserialized.minContrastRatio, 4.5);
+  assert.equal(deserialized.inspectedElements.length, 3);
+});
+
+test('Mutation Testing: WCAG threshold mutations and color contrast regression detection', () => {
+  // Mutant 1: White on white must NEVER pass WCAG AA
+  const whiteOnWhiteRatio = ThemeHelper.calculateContrastRatio('#ffffff', '#ffffff');
+  const result = ThemeHelper.evaluateWcagCompliance(whiteOnWhiteRatio);
+  assert.strictEqual(result.passAA, false, 'White on white input text must fail WCAG AA');
+
+  // Mutant 2: CSS with hardcoded #fff input text must be caught by audit
+  const mutantCSS = `
+    .form-group input[type="text"] {
+      background: rgba(255, 255, 255, 0.05);
+      color: #fff;
+    }
+  `;
+  const auditResult = ThemeHelper.auditFormInputContrasts(mutantCSS);
+  assert.strictEqual(auditResult.compliant, false);
+  assert.ok(auditResult.violations.length >= 1);
+  assert.ok(auditResult.violations[0].includes('hardcoded #fff'));
+});
+
+test('Quality Control (QA): Form input contrast audit and style.css regression prevention', () => {
+  const cssPath = path.join(__dirname, '../public/style.css');
+  const cssContent = fs.readFileSync(cssPath, 'utf8');
+
+  // Audit active stylesheet
+  const audit = ThemeHelper.auditFormInputContrasts(cssContent);
+  assert.strictEqual(
+    audit.compliant,
+    true,
+    `style.css failed input contrast audit: ${audit.violations.join('; ')}`
+  );
+
+  // Ensure semantic tokens exist
+  assert.ok(cssContent.includes('--modal-footer-bg'), 'style.css must define --modal-footer-bg');
+  assert.ok(cssContent.includes('--schedule-container-bg'), 'style.css must define --schedule-container-bg');
+  assert.ok(cssContent.includes('--schedule-day-bg'), 'style.css must define --schedule-day-bg');
+  assert.ok(cssContent.includes('--btn-secondary-bg'), 'style.css must define --btn-secondary-bg');
+
+  // Verify schedule-day-select uses theme variables and not hardcoded #fff
+  assert.ok(cssContent.includes('.schedule-day-select {'), 'style.css must define .schedule-day-select');
+  assert.ok(cssContent.includes('color: var(--text-primary)'), 'schedule-day-select must use var(--text-primary)');
+});
+

@@ -8,7 +8,7 @@ const {
   generateTableDDL,
   formatValueForMySQL,
   createPool,
-} = require('../bridge/migrate_all_tables');
+} = require('../bridge/legacy/migrate_all_tables');
 const { serializeRecords, deserializeRecords } = require('../bridge/helpers');
 
 describe('Database Migration & Type Mapping Standards', () => {

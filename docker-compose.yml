@@ -1,0 +1,72 @@
+# ==============================================================================
+# TimePulse Attendance System - Multi-Container Docker Compose Stack
+# ==============================================================================
+# Usage:
+#   docker compose up -d --build
+#   docker compose ps
+#   docker compose logs -f app
+#   docker compose down
+# ==============================================================================
+
+services:
+  # Application Web Server & Direct Hardware Sync Service
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: timepulse-app
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - PORT=3000
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_USER=${DB_USER:-timeclock_user}
+      - DB_PASSWORD=${DB_PASSWORD:-TimeClock@2026!}
+      - DB_NAME=${DB_NAME:-timeclock_db}
+      - DEVICE_SYNC_CRON=${DEVICE_SYNC_CRON:-* * * * *}
+      - SYNC_CRON=disabled
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - timepulse-network
+
+  # MySQL Relational Database Service
+  db:
+    image: mysql:8.0
+    container_name: timepulse-mysql
+    restart: unless-stopped
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-timeclock_db}
+      MYSQL_USER: ${DB_USER:-timeclock_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-TimeClock@2026!}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-TimeClockRoot@2026!}
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./docker/init-db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u $$MYSQL_USER --password=$$MYSQL_PASSWORD || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - timepulse-network
+
+volumes:
+  db_data:
+    name: timepulse_db_data
+
+networks:
+  timepulse-network:
+    name: timepulse_network
+    driver: bridge

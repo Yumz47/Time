@@ -322,8 +322,8 @@ document.addEventListener('DOMContentLoaded', () => {
     leaves:         { title: 'Leave Management',      subtitle: 'Employee leave requests, approvals and balance records' },
     holidays:       { title: 'Holiday Calendar',      subtitle: 'Official national and gazetted registry holidays' },
     corrections:    { title: 'Punch Corrections',     subtitle: 'Manual audit adjustments and biometric dispute corrections' },
-    'smart-reports': { title: 'Smart Reports Hub',    subtitle: 'Late arrivals, absentees, overtime & device metrics with CSV' },
-    reports:        { title: 'Paired Shifts Report',  subtitle: 'Calculated first-in/last-out paired durations and export' },
+    'smart-reports': { title: 'Reports Studio',       subtitle: 'Customizable attendance reporting, column builder, and export hub' },
+    reports:        { title: 'Reports Studio',        subtitle: 'Customizable attendance reporting, column builder, and export hub' },
     devices:        { title: 'Clock Devices',         subtitle: 'Manage biometric readers (ZKTeco/standalone readers)' },
     'users-admin':  { title: 'Personnel Admin',       subtitle: 'Create, update and delete staff members in database' },
     'app-users':    { title: 'System User Accounts',  subtitle: 'Configure platform access logins and roles (Admin/Viewer)' }
@@ -331,7 +331,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   navButtons.forEach(btn => {
     btn.addEventListener('click', () => {
-      const target = btn.dataset.tab;
+      let target = btn.dataset.tab;
+      if (target === 'smart-reports') target = 'reports';
       if (!titles[target]) return;
 
       navButtons.forEach(b => b.classList.remove('active'));
@@ -358,13 +359,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (target === 'leaves')       loadLeaves();
     if (target === 'holidays')     loadHolidays();
     if (target === 'corrections')  loadCorrections();
-    if (target === 'smart-reports') runSmartReport();
+    if (target === 'reports' || target === 'smart-reports') initReportsStudio();
     if (target === 'devices')      loadDevices();
     if (target === 'users-admin')  loadUsersAdmin();
     if (target === 'app-users')    loadAppUsers();
   }
 
-  // ─── 5. STATUS & ACCESS BRIDGE ─────────────────────────────────────────────
+  // ─── 5. STATUS & HARDWARE DEVICE BRIDGE ─────────────────────────────────────
   async function checkBridgeStatus() {
     try {
       const res = await apiFetch('/api/status');
@@ -380,7 +381,7 @@ document.addEventListener('DOMContentLoaded', () => {
           bridgeLastSyncEl.textContent = `Last sync: ${syncDate.toLocaleTimeString()}`;
           btnTriggerSync.classList.remove('spinning');
         } else {
-          bridgeLastSyncEl.textContent = 'Bridge connected';
+          bridgeLastSyncEl.textContent = 'Hardware clocks connected';
         }
 
         if (data.stats) {
@@ -399,14 +400,22 @@ document.addEventListener('DOMContentLoaded', () => {
   btnTriggerSync.addEventListener('click', async () => {
     btnTriggerSync.classList.add('spinning');
     bridgeIndicatorEl.className = 'status-indicator syncing';
-    bridgeLastSyncEl.textContent = 'Syncing data...';
-    showToast('Triggering sync from Access to MySQL...', 'info');
+    bridgeLastSyncEl.textContent = 'Syncing devices...';
+    showToast('Connecting to biometric clocks...', 'info');
 
     try {
       const res = await apiFetch('/api/sync', { method: 'POST' });
       const data = await res.json();
       if (data.success) {
-        showToast(`Sync complete! ${data.result.punchesCount.toLocaleString()} punches verified.`, 'success');
+        const devRes = data.result || data.deviceResult || {};
+        const totalDevs = devRes.totalDevices ?? 0;
+        const onlineDevs = devRes.successfulDevices ?? 0;
+        const inserted = devRes.totalPunchesInserted ?? devRes.punchesInserted ?? 0;
+        if (totalDevs > 0) {
+          showToast(`Sync complete! ${onlineDevs}/${totalDevs} clock(s) online, ${inserted} new punch(es) synced.`, 'success');
+        } else {
+          showToast('Device sync complete. All records verified.', 'success');
+        }
         checkBridgeStatus();
         switchTabLoader(currentTab);
       } else {
@@ -574,7 +583,7 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
 
           <div style="display:flex; justify-content:space-between; align-items:center;">
-            <div class="card-dept">${escapeHtml(emp.dept_name || 'General')}</div>
+            <div class="card-dept">${escapeHtml((!emp.dept_name || emp.dept_name === 'This Company') ? 'General Registry' : emp.dept_name)}</div>
             <span style="font-size:0.75rem; color:var(--text-muted);">First In: <strong style="color:var(--text-secondary)">${firstInFormatted}</strong></span>
           </div>
 
@@ -628,256 +637,959 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 1000);
   }
 
-  // ─── 8. MODULE: SMART REPORTS ──────────────────────────────────────────────
-  const smartReportSubtabs = document.querySelectorAll('#view-smart-reports .subtab-btn');
-  const smartFromDate = document.getElementById('smart-from-date');
-  const smartToDate = document.getElementById('smart-to-date');
-  const smartDeptFilter = document.getElementById('smart-dept-filter');
-  const smartThresholdContainer = document.getElementById('smart-threshold-container');
-  const smartThresholdInput = document.getElementById('smart-threshold-input');
-  const smartThresholdLabel = document.getElementById('smart-threshold-label');
-  const smartToContainer = document.getElementById('smart-to-container');
-  const btnRunSmartReport = document.getElementById('btn-run-smart-report');
-  const btnExportSmartCsv = document.getElementById('btn-export-smart-csv');
-  const smartReportThead = document.getElementById('smart-report-thead');
-  const smartReportTbody = document.getElementById('smart-report-tbody');
+  // ─── 8. MODULE: REPORTS STUDIO (UNIFIED CUSTOMIZABLE REPORT BUILDER) ────────
+  let reportsStudioInitialized = false;
 
-  // Default dates
-  if (smartFromDate && !smartFromDate.value) {
-    smartFromDate.value = '2026-09-01';
-  }
-  if (smartToDate && !smartToDate.value) {
-    smartToDate.value = '2026-09-15';
-  }
+  const COLUMN_DEFS = {
+    daily: [
+      { id: 'date', label: 'Date', default: true, render: r => `<strong>${r.date}</strong>`, getValue: r => r.date },
+      { id: 'badge_number', label: 'Badge #', default: true, render: r => `<span class="badge-number font-mono">${escapeHtml(r.badge_number || r.user_id)}</span>`, getValue: r => r.badge_number || r.user_id },
+      { id: 'name', label: 'Personnel Name', default: true, render: r => `<strong>${escapeHtml(r.name)}</strong>`, getValue: r => r.name },
+      { id: 'dept_name', label: 'Department', default: true, render: r => escapeHtml(r.dept_name || 'General'), getValue: r => r.dept_name || 'General' },
+      { id: 'first_in', label: 'First In', default: true, render: r => `<span class="font-mono">${formatTime(r.first_in)}</span>`, getValue: r => r.first_in ? new Date(r.first_in).toLocaleTimeString() : '' },
+      { id: 'last_out', label: 'Last Out', default: true, render: r => `<span class="font-mono">${formatTime(r.last_out)}</span>`, getValue: r => r.last_out ? new Date(r.last_out).toLocaleTimeString() : '' },
+      { id: 'punch_count', label: 'Punches', default: true, render: r => `<span class="punch-count-pill">${r.punch_count}</span>`, getValue: r => r.punch_count },
+      { id: 'total_hours', label: 'Total Hours', default: true, render: r => `<strong style="color:var(--accent-cyan);">${r.total_hours !== null && r.total_hours !== undefined ? r.total_hours + ' hrs' : '--'}</strong>`, getValue: r => r.total_hours !== null && r.total_hours !== undefined ? r.total_hours : '' },
+      { id: 'status', label: 'Status', default: true, render: r => {
+        if (r.is_auto_out) return '<span class="report-status-badge late">Auto Out</span>';
+        if (Number(r.total_hours) >= 7.5) return '<span class="report-status-badge on-time">Completed</span>';
+        if (Number(r.total_hours) > 0) return '<span class="report-status-badge late">Partial</span>';
+        return '<span class="report-status-badge absent">No Punch Out</span>';
+      }, getValue: r => r.is_auto_out ? 'Auto Out' : (Number(r.total_hours) >= 7.5 ? 'Completed' : 'Partial') }
+    ],
+    summary: [
+      { id: 'badge_number', label: 'Badge #', default: true, render: r => `<span class="badge-number font-mono">${escapeHtml(r.badge_number || r.user_id)}</span>`, getValue: r => r.badge_number || r.user_id },
+      { id: 'name', label: 'Employee', default: true, render: r => `<strong>${escapeHtml(r.name)}</strong>`, getValue: r => r.name },
+      { id: 'dept_name', label: 'Department', default: true, render: r => escapeHtml(r.dept_name || 'General'), getValue: r => r.dept_name || 'General' },
+      { id: 'days_present', label: 'Days Present', default: true, render: r => `<span class="punch-count-pill">${r.days_present} days</span>`, getValue: r => r.days_present },
+      { id: 'total_punches', label: 'Total Punches', default: true, render: r => r.total_punches, getValue: r => r.total_punches },
+      { id: 'late_count', label: 'Late Count', default: true, render: r => `<span class="${Number(r.late_count) > 0 ? 'report-status-badge late' : 'report-status-badge on-time'}">${r.late_count}</span>`, getValue: r => r.late_count },
+      { id: 'earliest_in', label: 'Earliest In', default: true, render: r => `<span class="font-mono">${r.earliest_in || '--'}</span>`, getValue: r => r.earliest_in || '' },
+      { id: 'latest_in', label: 'Latest In', default: false, render: r => `<span class="font-mono">${r.latest_in || '--'}</span>`, getValue: r => r.latest_in || '' },
+      { id: 'last_seen', label: 'Last Seen', default: true, render: r => `<span class="font-mono" style="font-size:0.85rem">${r.last_seen ? formatDateTime(r.last_seen) : '--'}</span>`, getValue: r => r.last_seen || '' }
+    ],
+    late: [
+      { id: 'date', label: 'Date', default: true, render: r => `<strong>${r.date}</strong>`, getValue: r => r.date },
+      { id: 'badge_number', label: 'Badge #', default: true, render: r => `<span class="badge-number font-mono">${escapeHtml(r.badge_number || r.user_id)}</span>`, getValue: r => r.badge_number || r.user_id },
+      { id: 'name', label: 'Employee', default: true, render: r => `<strong>${escapeHtml(r.name)}</strong>`, getValue: r => r.name },
+      { id: 'dept_name', label: 'Department', default: true, render: r => escapeHtml(r.dept_name || 'General'), getValue: r => r.dept_name || 'General' },
+      { id: 'check_in_time', label: 'Check-In Time', default: true, render: r => `<span class="font-mono" style="color:var(--accent-amber); font-weight:700;">${r.check_in_time}</span>`, getValue: r => r.check_in_time },
+      { id: 'threshold', label: 'Threshold', default: true, render: (r, th) => `<span class="font-mono" style="color:var(--text-muted);">${th || '08:15'}</span>`, getValue: (r, th) => th || '08:15' },
+      { id: 'minutes_late', label: 'Minutes Late', default: true, render: r => `<span class="report-status-badge late">${r.minutes_late}</span>`, getValue: r => r.minutes_late },
+      { id: 'status', label: 'Status', default: true, render: () => `<span class="report-status-badge late">TARDY</span>`, getValue: () => 'TARDY' }
+    ],
+    absent: [
+      { id: 'badge_number', label: 'Badge #', default: true, render: r => `<span class="badge-number font-mono">${escapeHtml(r.badge_number || r.user_id)}</span>`, getValue: r => r.badge_number || r.user_id },
+      { id: 'name', label: 'Employee', default: true, render: r => `<strong>${escapeHtml(r.name)}</strong>`, getValue: r => r.name },
+      { id: 'dept_name', label: 'Department', default: true, render: r => escapeHtml(r.dept_name || 'General'), getValue: r => r.dept_name || 'General' },
+      { id: 'date', label: 'Target Date', default: true, render: (r, th, from) => from || '—', getValue: (r, th, from) => from || '' },
+      { id: 'last_known_punch', label: 'Last Known Punch', default: true, render: r => `<span style="color:var(--text-muted); font-size:0.85rem">${r.last_known_punch ? formatDateTime(r.last_known_punch) : 'Never recorded'}</span>`, getValue: r => r.last_known_punch || 'Never' },
+      { id: 'status', label: 'Status', default: true, render: () => `<span class="report-status-badge absent">ABSENT</span>`, getValue: () => 'ABSENT' }
+    ],
+    overtime: [
+      { id: 'date', label: 'Date', default: true, render: r => `<strong>${r.date}</strong>`, getValue: r => r.date },
+      { id: 'badge_number', label: 'Badge #', default: true, render: r => `<span class="badge-number font-mono">${escapeHtml(r.badge_number || r.user_id)}</span>`, getValue: r => r.badge_number || r.user_id },
+      { id: 'name', label: 'Employee', default: true, render: r => `<strong>${escapeHtml(r.name)}</strong>`, getValue: r => r.name },
+      { id: 'dept_name', label: 'Department', default: true, render: r => escapeHtml(r.dept_name || 'General'), getValue: r => r.dept_name || 'General' },
+      { id: 'last_punch_time', label: 'Last Punch Out', default: true, render: r => `<span class="font-mono" style="color:var(--accent-cyan); font-weight:700;">${r.last_punch_time}</span>`, getValue: r => r.last_punch_time },
+      { id: 'threshold', label: 'Shift End Threshold', default: true, render: (r, th) => `<span class="font-mono" style="color:var(--text-muted);">${th || '17:00'}</span>`, getValue: (r, th) => th || '17:00' },
+      { id: 'overtime_duration', label: 'Overtime Duration', default: true, render: r => `<span class="report-status-badge overtime">+${r.overtime_duration}</span>`, getValue: r => r.overtime_duration },
+      { id: 'status', label: 'Status', default: true, render: () => `<span class="report-status-badge overtime">OVERTIME</span>`, getValue: () => 'OVERTIME' }
+    ],
+    device: [
+      { id: 'sn', label: 'Device SN', default: true, render: r => `<span class="badge-number font-mono">${escapeHtml(r.sn)}</span>`, getValue: r => r.sn },
+      { id: 'alias', label: 'Device Name / Alias', default: true, render: r => `<strong>${escapeHtml(r.alias || r.device_alias || '—')}</strong>`, getValue: r => r.alias || r.device_alias || '' },
+      { id: 'ip_address', label: 'IP Address', default: true, render: r => `<span class="font-mono">${escapeHtml(r.ip_address || '—')}</span>`, getValue: r => r.ip_address || '' },
+      { id: 'location', label: 'Location', default: true, render: r => escapeHtml(r.location || '—'), getValue: r => r.location || '' },
+      { id: 'status', label: 'Device Status', default: true, render: r => `<span class="device-status-badge ${r.status || r.device_status || 'active'}">${r.status || r.device_status || 'active'}</span>`, getValue: r => r.status || r.device_status || 'active' },
+      { id: 'total_punches', label: 'Total Punches', default: true, render: r => `<span class="punch-count-pill">${Number(r.total_punches || 0).toLocaleString()}</span>`, getValue: r => r.total_punches || 0 },
+      { id: 'unique_employees', label: 'Unique Personnel', default: true, render: r => `<strong>${r.unique_employees || r.unique_users || 0}</strong>`, getValue: r => r.unique_employees || r.unique_users || 0 },
+      { id: 'last_punch', label: 'Last Punch Time', default: true, render: r => `<span class="font-mono" style="font-size:0.85rem">${r.last_punch ? formatDateTime(r.last_punch) : 'None'}</span>`, getValue: r => r.last_punch || '' }
+    ]
+  };
 
-  smartReportSubtabs.forEach(btn => {
-    btn.addEventListener('click', () => {
-      smartReportSubtabs.forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      activeSmartReport = btn.dataset.reportType;
+  const ReportsStudio = {
+    currentMode: 'daily',
+    visibleColumns: new Set(),
+    reportData: [],
+    filteredData: [],
+    sortCol: null,
+    sortAsc: true,
 
-      // Adjust UI for specific report requirements
-      if (activeSmartReport === 'late') {
-        smartThresholdContainer.style.display = 'flex';
-        smartThresholdLabel.textContent = 'Late Threshold:';
-        smartThresholdInput.value = '08:15';
-        smartToContainer.style.display = 'flex';
-      } else if (activeSmartReport === 'overtime') {
-        smartThresholdContainer.style.display = 'flex';
-        smartThresholdLabel.textContent = 'Overtime Threshold:';
-        smartThresholdInput.value = '17:00';
-        smartToContainer.style.display = 'flex';
-      } else if (activeSmartReport === 'absent') {
-        smartThresholdContainer.style.display = 'none';
-        smartToContainer.style.display = 'none'; // single date
+    getStorageKey() {
+      const user = (currentUser && currentUser.username) ? currentUser.username : 'viewer';
+      return `tp_reports_presets_${user}`;
+    },
+
+    loadCustomPresets() {
+      try {
+        const raw = localStorage.getItem(this.getStorageKey());
+        return raw ? JSON.parse(raw) : {};
+      } catch (e) {
+        return {};
+      }
+    },
+
+    saveCustomPresets(presets) {
+      try {
+        localStorage.setItem(this.getStorageKey(), JSON.stringify(presets));
+      } catch (e) {
+        console.error('Failed to save preset to localStorage', e);
+      }
+    },
+
+    renderPresetDropdown() {
+      const optGroup = document.getElementById('reports-custom-presets-group');
+      if (!optGroup) return;
+      optGroup.innerHTML = '';
+      const presets = this.loadCustomPresets();
+      const keys = Object.keys(presets);
+      if (keys.length === 0) {
+        optGroup.innerHTML = '<option disabled>No custom presets saved</option>';
       } else {
-        smartThresholdContainer.style.display = 'none';
-        smartToContainer.style.display = 'flex';
+        keys.forEach(k => {
+          const opt = document.createElement('option');
+          opt.value = `custom_${k}`;
+          opt.textContent = `★ ${presets[k].name}`;
+          optGroup.appendChild(opt);
+        });
+      }
+    },
+
+    setMode(mode) {
+      this.currentMode = mode;
+      activeSmartReport = mode;
+
+      // Update pills
+      document.querySelectorAll('#report-type-pills .report-pill').forEach(pill => {
+        pill.classList.toggle('active', pill.dataset.reportType === mode);
+      });
+
+      // Update threshold & single/double date UI
+      const thresholdContainer = document.getElementById('container-report-threshold');
+      const thresholdLabel = document.getElementById('label-report-threshold');
+      const thresholdInput = document.getElementById('report-threshold-input');
+      const toContainer = document.getElementById('container-report-to');
+      const fromLabel = document.getElementById('label-report-from');
+      const reportTitle = document.getElementById('results-report-title');
+
+      if (mode === 'late') {
+        if (thresholdContainer) thresholdContainer.style.display = 'flex';
+        if (thresholdLabel) thresholdLabel.textContent = 'Late Threshold:';
+        if (thresholdInput) thresholdInput.value = '08:15';
+        if (toContainer) toContainer.style.display = 'flex';
+        if (fromLabel) fromLabel.textContent = 'From:';
+        if (reportTitle) reportTitle.textContent = 'Tardiness & Late Arrivals Audit';
+      } else if (mode === 'overtime') {
+        if (thresholdContainer) thresholdContainer.style.display = 'flex';
+        if (thresholdLabel) thresholdLabel.textContent = 'Overtime Threshold:';
+        if (thresholdInput) thresholdInput.value = '17:00';
+        if (toContainer) toContainer.style.display = 'flex';
+        if (fromLabel) fromLabel.textContent = 'From:';
+        if (reportTitle) reportTitle.textContent = 'Overtime & Extended Hours Audit';
+      } else if (mode === 'absent') {
+        if (thresholdContainer) thresholdContainer.style.display = 'none';
+        if (toContainer) toContainer.style.display = 'none';
+        if (fromLabel) fromLabel.textContent = 'Target Date:';
+        if (reportTitle) reportTitle.textContent = 'Daily Absentees & Missing Punches';
+      } else if (mode === 'summary') {
+        if (thresholdContainer) thresholdContainer.style.display = 'none';
+        if (toContainer) toContainer.style.display = 'flex';
+        if (fromLabel) fromLabel.textContent = 'From:';
+        if (reportTitle) reportTitle.textContent = 'Attendance & Days Present Summary';
+      } else if (mode === 'device') {
+        if (thresholdContainer) thresholdContainer.style.display = 'none';
+        if (toContainer) toContainer.style.display = 'flex';
+        if (fromLabel) fromLabel.textContent = 'From:';
+        if (reportTitle) reportTitle.textContent = 'Hardware Clock Device Activity';
+      } else {
+        // daily
+        if (thresholdContainer) thresholdContainer.style.display = 'none';
+        if (toContainer) toContainer.style.display = 'flex';
+        if (fromLabel) fromLabel.textContent = 'From:';
+        if (reportTitle) reportTitle.textContent = 'Daily Paired Shifts Report';
       }
 
-      runSmartReport();
-    });
-  });
+      // Reset visible columns to mode defaults
+      this.resetDefaultColumns();
+      this.renderColumnChips();
+    },
 
-  async function runSmartReport() {
-    if (!smartReportTbody) return;
-    const from = smartFromDate.value;
-    const to = smartToDate.value;
-    const deptId = smartDeptFilter.value;
-    const threshold = smartThresholdInput.value;
+    resetDefaultColumns() {
+      const defs = COLUMN_DEFS[this.currentMode] || [];
+      this.visibleColumns = new Set(defs.filter(d => d.default).map(d => d.id));
+    },
 
-    smartReportTbody.innerHTML = '<tr><td colspan="7" class="table-empty">Running report query...</td></tr>';
+    renderColumnChips() {
+      const container = document.getElementById('columns-chips-container');
+      if (!container) return;
+      container.innerHTML = '';
+      const defs = COLUMN_DEFS[this.currentMode] || [];
 
-    try {
-      if (activeSmartReport === 'summary') {
-        const params = new URLSearchParams({ from, to });
-        if (deptId) params.append('deptId', deptId);
-        const res = await apiFetch(`/api/reports/attendance-summary?${params.toString()}`);
-        const rows = await res.json();
+      defs.forEach(col => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = `col-chip ${this.visibleColumns.has(col.id) ? 'active' : ''}`;
+        chip.innerHTML = `<span class="col-chip-indicator"></span><span>${escapeHtml(col.label)}</span>`;
+        chip.addEventListener('click', () => {
+          if (this.visibleColumns.has(col.id)) {
+            if (this.visibleColumns.size <= 1) {
+              showToast('At least one column must remain visible', 'warning');
+              return;
+            }
+            this.visibleColumns.delete(col.id);
+            chip.classList.remove('active');
+          } else {
+            this.visibleColumns.add(col.id);
+            chip.classList.add('active');
+          }
+          this.renderReportTable();
+        });
+        container.appendChild(chip);
+      });
+    },
 
-        smartReportThead.innerHTML = `
-          <tr>
-            <th>Badge #</th>
-            <th>Employee</th>
-            <th>Department</th>
-            <th>Days Present</th>
-            <th>Total Punches</th>
-            <th>Avg First In</th>
-            <th>Avg Last Out</th>
-          </tr>
-        `;
+    setDateRangePreset(preset) {
+      const fromInput = document.getElementById('report-from');
+      const toInput = document.getElementById('report-to');
+      if (!fromInput || !toInput) return;
 
-        if (!rows.length) {
-          smartReportTbody.innerHTML = '<tr><td colspan="7" class="table-empty">No records found for period</td></tr>';
-          return;
+      const now = new Date();
+      const formatLocalDate = (d) => {
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      };
+
+      if (preset === 'today') {
+        const todayStr = formatLocalDate(now);
+        fromInput.value = todayStr;
+        toInput.value = todayStr;
+      } else if (preset === 'yesterday') {
+        const y = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+        const yStr = formatLocalDate(y);
+        fromInput.value = yStr;
+        toInput.value = yStr;
+      } else if (preset === 'this_week') {
+        const day = now.getDay();
+        const diff = now.getDate() - day + (day === 0 ? -6 : 1);
+        const monday = new Date(now.getFullYear(), now.getMonth(), diff);
+        fromInput.value = formatLocalDate(monday);
+        toInput.value = formatLocalDate(now);
+      } else if (preset === 'last_week') {
+        const day = now.getDay();
+        const diff = now.getDate() - day + (day === 0 ? -6 : 1) - 7;
+        const monday = new Date(now.getFullYear(), now.getMonth(), diff);
+        const sunday = new Date(now.getFullYear(), now.getMonth(), diff + 6);
+        fromInput.value = formatLocalDate(monday);
+        toInput.value = formatLocalDate(sunday);
+      } else if (preset === 'this_month') {
+        const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+        fromInput.value = formatLocalDate(firstDay);
+        toInput.value = formatLocalDate(now);
+      } else if (preset === 'sep_2026') {
+        fromInput.value = '2026-09-01';
+        toInput.value = '2026-09-17';
+      }
+
+      // Update date chips UI
+      document.querySelectorAll('#date-quick-presets .date-chip').forEach(chip => {
+        chip.classList.toggle('active', chip.dataset.range === preset);
+      });
+    },
+
+    async runReport() {
+      const fromInput = document.getElementById('report-from');
+      const toInput = document.getElementById('report-to');
+      const deptFilter = document.getElementById('report-dept');
+      const searchFilter = document.getElementById('report-search-input');
+      const thresholdInput = document.getElementById('report-threshold-input');
+      const tbody = document.getElementById('reports-tbody');
+      const btnExport = document.getElementById('btn-export-csv');
+      const btnPrint = document.getElementById('btn-print-report');
+      const btnCopy = document.getElementById('btn-copy-report');
+      const countBadge = document.getElementById('results-count-badge');
+
+      if (!fromInput || !tbody) return;
+      const from = fromInput.value;
+      const to = toInput ? toInput.value : from;
+      const deptId = deptFilter ? deptFilter.value : '';
+      const search = searchFilter ? searchFilter.value.trim() : '';
+      const threshold = thresholdInput ? thresholdInput.value : '08:15';
+
+      if (!from || (this.currentMode !== 'absent' && !to)) {
+        showToast('Please select valid date boundaries', 'warning');
+        return;
+      }
+
+      tbody.innerHTML = `<tr><td colspan="${Math.max(this.visibleColumns.size, 1)}" class="table-empty"><div class="loading-spinner"></div> Querying attendance intelligence...</td></tr>`;
+      if (btnExport) btnExport.disabled = true;
+      if (btnPrint) btnPrint.disabled = true;
+      if (btnCopy) btnCopy.disabled = true;
+      if (countBadge) countBadge.textContent = 'Loading...';
+
+      try {
+        let endpoint = '';
+        const params = new URLSearchParams();
+
+        if (this.currentMode === 'daily') {
+          endpoint = '/api/reports/daily';
+          params.append('from', from);
+          params.append('to', to);
+          if (deptId) params.append('deptId', deptId);
+          if (search) params.append('search', search);
+        } else if (this.currentMode === 'summary') {
+          endpoint = '/api/reports/attendance-summary';
+          params.append('from', from);
+          params.append('to', to);
+          if (deptId) params.append('deptId', deptId);
+          if (search) params.append('search', search);
+        } else if (this.currentMode === 'late') {
+          endpoint = '/api/reports/late-arrivals';
+          params.append('from', from);
+          params.append('to', to);
+          params.append('threshold', threshold);
+          if (deptId) params.append('deptId', deptId);
+          if (search) params.append('search', search);
+        } else if (this.currentMode === 'absent') {
+          endpoint = '/api/reports/absent';
+          params.append('date', from);
+          if (deptId) params.append('dept_id', deptId);
+          if (search) params.append('search', search);
+        } else if (this.currentMode === 'overtime') {
+          endpoint = '/api/reports/overtime';
+          params.append('from', from);
+          params.append('to', to);
+          params.append('threshold', threshold);
+          if (deptId) params.append('deptId', deptId);
+          if (search) params.append('search', search);
+        } else if (this.currentMode === 'device') {
+          endpoint = '/api/reports/by-device';
+          params.append('from', from);
+          params.append('to', to);
         }
 
-        smartReportTbody.innerHTML = rows.map(r => `
-          <tr>
-            <td><span class="badge-number font-mono">${escapeHtml(r.badge_number || r.user_id)}</span></td>
-            <td><strong>${escapeHtml(r.name)}</strong></td>
-            <td>${escapeHtml(r.dept_name || 'General')}</td>
-            <td><span class="punch-count-pill">${r.days_present} days</span></td>
-            <td>${r.total_punches}</td>
-            <td class="font-mono">${r.avg_first_in || '--'}</td>
-            <td class="font-mono">${r.avg_last_out || '--'}</td>
-          </tr>
-        `).join('');
+        const res = await apiFetch(`${endpoint}?${params.toString()}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to generate report`);
+        const json = await res.json();
 
-      } else if (activeSmartReport === 'late') {
-        const params = new URLSearchParams({ from, to, threshold });
-        if (deptId) params.append('deptId', deptId);
-        const res = await apiFetch(`/api/reports/late-arrivals?${params.toString()}`);
-        const rows = await res.json();
-
-        smartReportThead.innerHTML = `
-          <tr>
-            <th>Date</th>
-            <th>Badge #</th>
-            <th>Employee</th>
-            <th>Department</th>
-            <th>Check In Time</th>
-            <th>Threshold</th>
-            <th>Minutes Late</th>
-          </tr>
-        `;
-
-        if (!rows.length) {
-          smartReportTbody.innerHTML = '<tr><td colspan="7" class="table-empty">No late arrivals detected!</td></tr>';
-          return;
+        if (this.currentMode === 'absent') {
+          this.reportData = json.employees || [];
+        } else {
+          this.reportData = Array.isArray(json) ? json : [];
         }
 
-        smartReportTbody.innerHTML = rows.map(r => `
-          <tr>
-            <td><strong>${r.date}</strong></td>
-            <td><span class="badge-number font-mono">${escapeHtml(r.badge_number || r.user_id)}</span></td>
-            <td>${escapeHtml(r.name)}</td>
-            <td>${escapeHtml(r.dept_name || 'General')}</td>
-            <td class="font-mono" style="color:var(--accent-amber);">${r.check_in_time}</td>
-            <td class="font-mono" style="color:var(--text-muted);">${threshold}</td>
-            <td><span class="status-pill status-out">${r.minutes_late}</span></td>
-          </tr>
-        `).join('');
+        this.updateKpis();
+        this.renderReportTable();
 
-      } else if (activeSmartReport === 'absent') {
-        const params = new URLSearchParams({ date: from });
-        if (deptId) params.append('dept_id', deptId);
-        const res = await apiFetch(`/api/reports/absent?${params.toString()}`);
-        const data = await res.json();
-        const rows = data.employees || [];
+        const hasRows = this.reportData.length > 0;
+        if (btnExport) btnExport.disabled = !hasRows;
+        if (btnPrint) btnPrint.disabled = !hasRows;
+        if (btnCopy) btnCopy.disabled = !hasRows;
+      } catch (e) {
+        console.error('ReportsStudio Error:', e);
+        tbody.innerHTML = `<tr><td colspan="${Math.max(this.visibleColumns.size, 1)}" class="table-empty" style="color:var(--accent-rose)">Failed to generate report: ${escapeHtml(e.message)}</td></tr>`;
+        if (countBadge) countBadge.textContent = '0 rows';
+      }
+    },
 
-        smartReportThead.innerHTML = `
-          <tr>
-            <th>Badge #</th>
-            <th>Employee</th>
-            <th>Department</th>
-            <th>Target Date</th>
-            <th>Last Known Punch</th>
-            <th>Status</th>
-          </tr>
-        `;
+    updateKpis(dataset) {
+      const data = dataset || this.reportData || [];
+      const grid = document.getElementById('reports-kpi-grid');
+      const recs = document.getElementById('kpi-total-records');
+      const hours = document.getElementById('kpi-total-hours');
+      const m2Label = document.getElementById('kpi-metric2-label');
+      const late = document.getElementById('kpi-late-count');
+      const m3Label = document.getElementById('kpi-metric3-label');
+      const absent = document.getElementById('kpi-absent-count');
+      const m4Label = document.getElementById('kpi-metric4-label');
 
-        if (!rows.length) {
-          smartReportTbody.innerHTML = '<tr><td colspan="6" class="table-empty">No absentees recorded! All rostered staff present.</td></tr>';
-          return;
+      if (!grid) return;
+      grid.style.display = 'grid';
+
+      const totalRows = data.length;
+      if (recs) recs.textContent = totalRows.toLocaleString();
+
+      if (this.currentMode === 'daily') {
+        const totalHrs = data.reduce((acc, r) => acc + (Number(r.total_hours) || 0), 0);
+        const avgHrs = totalRows > 0 ? (totalHrs / totalRows).toFixed(1) : '0.0';
+        if (m2Label) m2Label.textContent = 'Total Hours Worked';
+        if (hours) hours.textContent = `${totalHrs.toFixed(1)}h (avg ${avgHrs}h)`;
+
+        const autoOutCount = data.filter(r => r.is_auto_out).length;
+        if (m3Label) m3Label.textContent = 'Auto Punch-Outs';
+        if (late) late.textContent = autoOutCount;
+
+        const uniquePersonnel = new Set(data.map(r => r.user_id)).size;
+        if (m4Label) m4Label.textContent = 'Active Personnel';
+        if (absent) absent.textContent = uniquePersonnel;
+      } else if (this.currentMode === 'summary') {
+        const totalPunches = data.reduce((acc, r) => acc + (Number(r.total_punches) || 0), 0);
+        if (m2Label) m2Label.textContent = 'Total Punch Swipes';
+        if (hours) hours.textContent = totalPunches.toLocaleString();
+
+        const totalLatePunches = data.reduce((acc, r) => acc + (Number(r.late_count) || 0), 0);
+        if (m3Label) m3Label.textContent = 'Total Late Punches';
+        if (late) late.textContent = totalLatePunches;
+
+        const avgDays = totalRows > 0 ? (data.reduce((a, r) => a + (Number(r.days_present) || 0), 0) / totalRows).toFixed(1) : '0';
+        if (m4Label) m4Label.textContent = 'Avg Days Present';
+        if (absent) absent.textContent = `${avgDays} days`;
+      } else if (this.currentMode === 'late') {
+        if (m2Label) m2Label.textContent = 'Late Arrivals';
+        if (hours) hours.textContent = totalRows;
+
+        const uniqueEmps = new Set(data.map(r => r.user_id)).size;
+        if (m3Label) m3Label.textContent = 'Tardy Employees';
+        if (late) late.textContent = uniqueEmps;
+
+        if (m4Label) m4Label.textContent = 'Status Target';
+        if (absent) absent.textContent = 'Tardy';
+      } else if (this.currentMode === 'absent') {
+        if (m2Label) m2Label.textContent = 'Absentees Count';
+        if (hours) hours.textContent = totalRows;
+
+        if (m3Label) m3Label.textContent = 'Target Date';
+        const fromInput = document.getElementById('report-from');
+        if (late) late.textContent = fromInput ? fromInput.value : 'Today';
+
+        if (m4Label) m4Label.textContent = 'Compliance Action';
+        if (absent) absent.textContent = 'Follow-up';
+      } else if (this.currentMode === 'overtime') {
+        const parseDurationToHours = (dur) => {
+          if (!dur) return 0;
+          const clean = String(dur).replace('+', '').trim();
+          const parts = clean.split(':').map(Number);
+          if (parts.length < 2 || isNaN(parts[0]) || isNaN(parts[1])) return 0;
+          return (parts[0] || 0) + (parts[1] || 0) / 60 + (parts[2] || 0) / 3600;
+        };
+
+        const totalOtHours = data.reduce((acc, r) => acc + parseDurationToHours(r.overtime_duration), 0);
+        const avgOtHours = totalRows > 0 ? (totalOtHours / totalRows).toFixed(1) : '0.0';
+
+        if (m2Label) m2Label.textContent = 'Total Overtime Hours';
+        if (hours) hours.textContent = `${totalOtHours.toFixed(1)}h (avg ${avgOtHours}h)`;
+
+        const uniqueEmps = new Set(data.map(r => r.user_id)).size;
+        if (m3Label) m3Label.textContent = 'Personnel with OT';
+        if (late) late.textContent = uniqueEmps;
+
+        let maxDurationStr = '00:00:00';
+        let maxSecs = 0;
+        data.forEach(r => {
+          if (!r.overtime_duration) return;
+          const clean = String(r.overtime_duration).replace('+', '').trim();
+          const parts = clean.split(':').map(Number);
+          const secs = (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0);
+          if (secs > maxSecs) {
+            maxSecs = secs;
+            maxDurationStr = clean;
+          }
+        });
+
+        if (m4Label) m4Label.textContent = 'Max Single OT';
+        if (absent) absent.textContent = totalRows > 0 ? `+${maxDurationStr}` : '0h';
+      } else if (this.currentMode === 'device') {
+        const totalPunches = data.reduce((acc, r) => acc + (Number(r.total_punches) || 0), 0);
+        if (m2Label) m2Label.textContent = 'Hardware Traffic';
+        if (hours) hours.textContent = `${totalPunches.toLocaleString()} punches`;
+
+        const activeDevices = data.filter(r => (r.status || r.device_status) === 'active').length;
+        if (m3Label) m3Label.textContent = 'Active Hardware Clocks';
+        if (late) late.textContent = `${activeDevices} / ${totalRows}`;
+
+        const totalUnique = data.reduce((acc, r) => acc + (Number(r.unique_employees || r.unique_users) || 0), 0);
+        if (m4Label) m4Label.textContent = 'Unique Users Seen';
+        if (absent) absent.textContent = totalUnique;
+      }
+    },
+
+    renderReportTable() {
+      const thead = document.getElementById('reports-thead');
+      const tbody = document.getElementById('reports-tbody');
+      const countBadge = document.getElementById('results-count-badge');
+      const searchBox = document.getElementById('report-table-instant-filter');
+      const thresholdInput = document.getElementById('report-threshold-input');
+      const fromInput = document.getElementById('report-from');
+
+      if (!thead || !tbody) return;
+
+      const defs = COLUMN_DEFS[this.currentMode] || [];
+      const visibleDefs = defs.filter(d => this.visibleColumns.has(d.id));
+
+      if (visibleDefs.length === 0) {
+        thead.innerHTML = '';
+        tbody.innerHTML = '<tr><td class="table-empty">No columns selected. Use section 4 above to enable visible columns.</td></tr>';
+        if (countBadge) countBadge.textContent = '0 rows';
+        return;
+      }
+
+      // 1. Instant client-side text filter
+      const filterText = searchBox ? searchBox.value.trim().toLowerCase() : '';
+      let rows = this.reportData;
+      if (filterText) {
+        rows = rows.filter(r => {
+          return visibleDefs.some(col => {
+            const val = String(col.getValue(r, thresholdInput?.value, fromInput?.value) || '').toLowerCase();
+            return val.includes(filterText);
+          });
+        });
+      }
+
+      // 2. Sorting
+      if (this.sortCol) {
+        const colDef = visibleDefs.find(c => c.id === this.sortCol);
+        if (colDef) {
+          rows.sort((a, b) => {
+            let valA = colDef.getValue(a, thresholdInput?.value, fromInput?.value);
+            let valB = colDef.getValue(b, thresholdInput?.value, fromInput?.value);
+
+            if (valA === undefined || valA === null) valA = '';
+            if (valB === undefined || valB === null) valB = '';
+
+            const numA = Number(valA);
+            const numB = Number(valB);
+            if (!isNaN(numA) && !isNaN(numB) && valA !== '' && valB !== '') {
+              return this.sortAsc ? numA - numB : numB - numA;
+            }
+            return this.sortAsc
+              ? String(valA).localeCompare(String(valB))
+              : String(valB).localeCompare(String(valA));
+          });
         }
+      }
 
-        smartReportTbody.innerHTML = rows.map(r => `
+      this.filteredData = rows;
+
+      // 3. Render thead
+      thead.innerHTML = `
+        <tr>
+          ${visibleDefs.map(col => {
+            const isSorted = this.sortCol === col.id;
+            const arrow = isSorted ? (this.sortAsc ? ' ▲' : ' ▼') : ' ⇅';
+            return `<th class="sortable-th ${isSorted ? 'sorted' : ''}" data-col-id="${col.id}">${escapeHtml(col.label)}<span class="th-sort-indicator">${arrow}</span></th>`;
+          }).join('')}
+        </tr>
+      `;
+
+      // Bind header sorting
+      thead.querySelectorAll('.sortable-th').forEach(th => {
+        th.addEventListener('click', () => {
+          const colId = th.dataset.colId;
+          if (this.sortCol === colId) {
+            this.sortAsc = !this.sortAsc;
+          } else {
+            this.sortCol = colId;
+            this.sortAsc = true;
+          }
+          this.renderReportTable();
+        });
+      });
+
+      // 4. Render tbody
+      if (rows.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="${visibleDefs.length}" class="table-empty">${filterText ? 'No rows match filter criteria' : 'No attendance records found for criteria'}</td></tr>`;
+      } else {
+        const thVal = thresholdInput ? thresholdInput.value : '';
+        const fromVal = fromInput ? fromInput.value : '';
+        tbody.innerHTML = rows.map(r => `
           <tr>
-            <td><span class="badge-number font-mono">${escapeHtml(r.badge_number || r.user_id)}</span></td>
-            <td><strong>${escapeHtml(r.name)}</strong></td>
-            <td>${escapeHtml(r.dept_name || 'General')}</td>
-            <td>${from}</td>
-            <td style="color:var(--text-muted); font-size:0.85rem">${r.last_known_punch ? formatTime(r.last_known_punch) : 'Never recorded'}</td>
-            <td><span class="status-pill status-absent">ABSENT</span></td>
-          </tr>
-        `).join('');
-
-      } else if (activeSmartReport === 'overtime') {
-        const params = new URLSearchParams({ from, to, threshold });
-        if (deptId) params.append('deptId', deptId);
-        const res = await apiFetch(`/api/reports/overtime?${params.toString()}`);
-        const rows = await res.json();
-
-        smartReportThead.innerHTML = `
-          <tr>
-            <th>Date</th>
-            <th>Badge #</th>
-            <th>Employee</th>
-            <th>Department</th>
-            <th>Last Punch Out</th>
-            <th>Overtime Duration</th>
-          </tr>
-        `;
-
-        if (!rows.length) {
-          smartReportTbody.innerHTML = '<tr><td colspan="6" class="table-empty">No overtime punches recorded past threshold</td></tr>';
-          return;
-        }
-
-        smartReportTbody.innerHTML = rows.map(r => `
-          <tr>
-            <td><strong>${r.date}</strong></td>
-            <td><span class="badge-number font-mono">${escapeHtml(r.badge_number || r.user_id)}</span></td>
-            <td>${escapeHtml(r.name)}</td>
-            <td>${escapeHtml(r.dept_name || 'General')}</td>
-            <td class="font-mono" style="color:var(--accent-cyan)">${r.last_punch_out}</td>
-            <td><span class="status-pill status-in">+${r.overtime_duration}</span></td>
-          </tr>
-        `).join('');
-
-      } else if (activeSmartReport === 'device') {
-        const params = new URLSearchParams({ from, to });
-        const res = await apiFetch(`/api/reports/by-device?${params.toString()}`);
-        const rows = await res.json();
-
-        smartReportThead.innerHTML = `
-          <tr>
-            <th>Device Serial (SN)</th>
-            <th>Device Name / Alias</th>
-            <th>IP Address</th>
-            <th>Location</th>
-            <th>Status</th>
-            <th>Punches in Period</th>
-            <th>Unique Personnel</th>
-          </tr>
-        `;
-
-        if (!rows.length) {
-          smartReportTbody.innerHTML = '<tr><td colspan="7" class="table-empty">No device punch logs found</td></tr>';
-          return;
-        }
-
-        smartReportTbody.innerHTML = rows.map(r => `
-          <tr>
-            <td><span class="badge-number font-mono">${escapeHtml(r.sn)}</span></td>
-            <td><strong>${escapeHtml(r.alias || '—')}</strong></td>
-            <td class="font-mono">${escapeHtml(r.ip_address || '—')}</td>
-            <td style="color:var(--text-secondary)">${escapeHtml(r.location || '—')}</td>
-            <td><span class="device-status-badge ${r.status || 'active'}">${r.status || 'active'}</span></td>
-            <td><span class="punch-count-pill">${Number(r.total_punches).toLocaleString()}</span></td>
-            <td><strong>${r.unique_users}</strong></td>
+            ${visibleDefs.map(col => `<td>${col.render(r, thVal, fromVal)}</td>`).join('')}
           </tr>
         `).join('');
       }
-    } catch (e) {
-      smartReportTbody.innerHTML = `<tr><td colspan="7" class="table-empty" style="color:var(--accent-rose)">Error generating report: ${escapeHtml(e.message)}</td></tr>`;
+
+      // Update badge and KPIs dynamically
+      this.updateKpis(rows);
+      if (countBadge) {
+        if (filterText) {
+          countBadge.textContent = `${rows.length} / ${this.reportData.length} rows`;
+        } else {
+          countBadge.textContent = `${rows.length} rows`;
+        }
+      }
+    },
+
+    exportCsv() {
+      if (!this.reportData || !this.reportData.length) {
+        showToast('No data available to export', 'warning');
+        return;
+      }
+
+      const fromInput = document.getElementById('report-from');
+      const toInput = document.getElementById('report-to');
+      const thresholdInput = document.getElementById('report-threshold-input');
+      const from = fromInput ? fromInput.value : 'report';
+      const to = toInput ? toInput.value : from;
+      const thVal = thresholdInput ? thresholdInput.value : '';
+
+      const defs = COLUMN_DEFS[this.currentMode] || [];
+      const visibleDefs = defs.filter(d => this.visibleColumns.has(d.id));
+
+      const headers = visibleDefs.map(d => `"${d.label.replace(/"/g, '""')}"`);
+      const rowsToExport = this.filteredData.length ? this.filteredData : this.reportData;
+
+      const csvRows = [headers.join(',')];
+      rowsToExport.forEach(r => {
+        const row = visibleDefs.map(d => {
+          const val = d.getValue(r, thVal, from);
+          return `"${String(val ?? '').replace(/"/g, '""')}"`;
+        });
+        csvRows.push(row.join(','));
+      });
+
+      const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ReportsStudio_${this.currentMode}_${from}_to_${to}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast(`Exported ${rowsToExport.length} rows to CSV`, 'success');
+    },
+
+    copyTable() {
+      const rowsToExport = this.filteredData.length ? this.filteredData : this.reportData;
+      if (!rowsToExport.length) {
+        showToast('No rows to copy', 'warning');
+        return;
+      }
+
+      const thresholdInput = document.getElementById('report-threshold-input');
+      const fromInput = document.getElementById('report-from');
+      const thVal = thresholdInput ? thresholdInput.value : '';
+      const fromVal = fromInput ? fromInput.value : '';
+
+      const defs = COLUMN_DEFS[this.currentMode] || [];
+      const visibleDefs = defs.filter(d => this.visibleColumns.has(d.id));
+
+      const headers = visibleDefs.map(d => d.label);
+      const tsvRows = [headers.join('\t')];
+
+      rowsToExport.forEach(r => {
+        const row = visibleDefs.map(d => String(d.getValue(r, thVal, fromVal) ?? '').replace(/\t|\n/g, ' '));
+        tsvRows.push(row.join('\t'));
+      });
+
+      navigator.clipboard.writeText(tsvRows.join('\n'))
+        .then(() => showToast(`Copied ${rowsToExport.length} rows to clipboard!`, 'success'))
+        .catch(() => showToast('Failed to copy to clipboard', 'error'));
+    },
+
+    saveCurrentAsPreset() {
+      const name = prompt('Enter a name for this customized report preset:');
+      if (!name || !name.trim()) return;
+
+      const trimmedName = name.trim();
+      const presets = this.loadCustomPresets();
+      const key = `preset_${Date.now()}`;
+
+      const fromInput = document.getElementById('report-from');
+      const toInput = document.getElementById('report-to');
+      const deptFilter = document.getElementById('report-dept');
+      const searchFilter = document.getElementById('report-search-input');
+      const thresholdInput = document.getElementById('report-threshold-input');
+
+      presets[key] = {
+        name: trimmedName,
+        mode: this.currentMode,
+        from: fromInput?.value || '2026-09-01',
+        to: toInput?.value || '2026-09-17',
+        deptId: deptFilter?.value || '',
+        search: searchFilter?.value || '',
+        threshold: thresholdInput?.value || '08:15',
+        columns: Array.from(this.visibleColumns)
+      };
+
+      this.saveCustomPresets(presets);
+      this.renderPresetDropdown();
+
+      const presetSelect = document.getElementById('reports-preset-select');
+      if (presetSelect) presetSelect.value = `custom_${key}`;
+
+      const btnDelete = document.getElementById('btn-delete-custom-preset');
+      if (btnDelete) btnDelete.style.display = 'inline-flex';
+
+      showToast(`Custom preset "${trimmedName}" saved successfully!`, 'success');
+    },
+
+    deleteCurrentPreset() {
+      const presetSelect = document.getElementById('reports-preset-select');
+      if (!presetSelect || !presetSelect.value.startsWith('custom_')) return;
+
+      const key = presetSelect.value.replace('custom_', '');
+      const presets = this.loadCustomPresets();
+      if (!presets[key]) return;
+
+      const name = presets[key].name;
+      if (!confirm(`Delete custom report preset "${name}"?`)) return;
+
+      delete presets[key];
+      this.saveCustomPresets(presets);
+      this.renderPresetDropdown();
+
+      presetSelect.value = 'sys_daily';
+      const btnDelete = document.getElementById('btn-delete-custom-preset');
+      if (btnDelete) btnDelete.style.display = 'none';
+
+      this.setMode('daily');
+      showToast(`Preset "${name}" removed`, 'info');
+    },
+
+    applyPreset(presetValue) {
+      const btnDelete = document.getElementById('btn-delete-custom-preset');
+      if (presetValue.startsWith('sys_')) {
+        if (btnDelete) btnDelete.style.display = 'none';
+        const modeMap = {
+          sys_daily: 'daily',
+          sys_summary: 'summary',
+          sys_late: 'late',
+          sys_absent: 'absent',
+          sys_overtime: 'overtime',
+          sys_device: 'device'
+        };
+        const mode = modeMap[presetValue] || 'daily';
+        this.setMode(mode);
+        this.runReport();
+      } else if (presetValue.startsWith('custom_')) {
+        if (btnDelete) btnDelete.style.display = 'inline-flex';
+        const key = presetValue.replace('custom_', '');
+        const presets = this.loadCustomPresets();
+        const p = presets[key];
+        if (!p) return;
+
+        this.currentMode = p.mode || 'daily';
+        activeSmartReport = this.currentMode;
+
+        const fromInput = document.getElementById('report-from');
+        const toInput = document.getElementById('report-to');
+        const deptFilter = document.getElementById('report-dept');
+        const searchFilter = document.getElementById('report-search-input');
+        const thresholdInput = document.getElementById('report-threshold-input');
+
+        if (fromInput && p.from) fromInput.value = p.from;
+        if (toInput && p.to) toInput.value = p.to;
+        if (deptFilter && p.deptId !== undefined) deptFilter.value = p.deptId;
+        if (searchFilter && p.search !== undefined) searchFilter.value = p.search;
+        if (thresholdInput && p.threshold) thresholdInput.value = p.threshold;
+
+        // Apply mode UI adjustments
+        this.setMode(this.currentMode);
+
+        // Restore custom visible columns if saved
+        if (Array.isArray(p.columns) && p.columns.length > 0) {
+          this.visibleColumns = new Set(p.columns);
+          this.renderColumnChips();
+        }
+
+        this.runReport();
+      }
+    }
+  };
+
+  function initReportsStudio() {
+    // 1. Initialize default dates if blank
+    const fromInput = document.getElementById('report-from');
+    const toInput = document.getElementById('report-to');
+    if (fromInput && !fromInput.value) fromInput.value = '2026-09-01';
+    if (toInput && !toInput.value) toInput.value = '2026-09-17';
+
+    // 2. Load custom presets in dropdown
+    ReportsStudio.renderPresetDropdown();
+
+    // 3. Render initial column chips
+    if (ReportsStudio.visibleColumns.size === 0) {
+      ReportsStudio.resetDefaultColumns();
+    }
+    ReportsStudio.renderColumnChips();
+
+    // 4. One-time event listeners setup
+    if (!reportsStudioInitialized) {
+      reportsStudioInitialized = true;
+
+      // Presets dropdown
+      document.getElementById('reports-preset-select')?.addEventListener('change', (e) => {
+        ReportsStudio.applyPreset(e.target.value);
+      });
+
+      // Save custom preset
+      document.getElementById('btn-save-custom-preset')?.addEventListener('click', () => {
+        ReportsStudio.saveCurrentAsPreset();
+      });
+
+      // Delete custom preset
+      document.getElementById('btn-delete-custom-preset')?.addEventListener('click', () => {
+        ReportsStudio.deleteCurrentPreset();
+      });
+
+      // Mode pills
+      document.querySelectorAll('#report-type-pills .report-pill').forEach(pill => {
+        pill.addEventListener('click', () => {
+          ReportsStudio.setMode(pill.dataset.reportType);
+          ReportsStudio.runReport();
+        });
+      });
+
+      // Date quick presets
+      document.querySelectorAll('#date-quick-presets .date-chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+          ReportsStudio.setDateRangePreset(chip.dataset.range);
+          ReportsStudio.runReport();
+        });
+      });
+
+      // Column Select All / Reset Default
+      document.getElementById('btn-cols-select-all')?.addEventListener('click', () => {
+        const defs = COLUMN_DEFS[ReportsStudio.currentMode] || [];
+        ReportsStudio.visibleColumns = new Set(defs.map(d => d.id));
+        ReportsStudio.renderColumnChips();
+        ReportsStudio.renderReportTable();
+      });
+
+      document.getElementById('btn-cols-reset-default')?.addEventListener('click', () => {
+        ReportsStudio.resetDefaultColumns();
+        ReportsStudio.renderColumnChips();
+        ReportsStudio.renderReportTable();
+      });
+
+      // Generate Report button
+      document.getElementById('btn-generate-report')?.addEventListener('click', () => {
+        ReportsStudio.runReport();
+      });
+
+      // Reset Filters button
+      document.getElementById('btn-reset-report-filters')?.addEventListener('click', () => {
+        if (fromInput) fromInput.value = '2026-09-01';
+        if (toInput) toInput.value = '2026-09-17';
+        const deptFilter = document.getElementById('report-dept');
+        if (deptFilter) deptFilter.value = '';
+        const searchFilter = document.getElementById('report-search-input');
+        if (searchFilter) searchFilter.value = '';
+        const thInput = document.getElementById('report-threshold-input');
+        if (thInput) thInput.value = ReportsStudio.currentMode === 'overtime' ? '17:00' : '08:15';
+        ReportsStudio.resetDefaultColumns();
+        ReportsStudio.renderColumnChips();
+        ReportsStudio.runReport();
+      });
+
+      // Export actions
+      document.getElementById('btn-export-csv')?.addEventListener('click', () => {
+        ReportsStudio.exportCsv();
+      });
+
+      document.getElementById('btn-print-report')?.addEventListener('click', () => {
+        window.print();
+      });
+
+      document.getElementById('btn-copy-report')?.addEventListener('click', () => {
+        ReportsStudio.copyTable();
+      });
+
+      // Real-time instant table filter (filters rows & KPIs in memory on keystroke)
+      document.getElementById('report-table-instant-filter')?.addEventListener('input', () => {
+        ReportsStudio.renderReportTable();
+      });
+
+      // Dynamic automatic reload on filter or date change
+      ['report-dept', 'report-from', 'report-to', 'report-threshold-input'].forEach(id => {
+        document.getElementById(id)?.addEventListener('change', () => {
+          ReportsStudio.runReport();
+        });
+      });
+
+      // Debounced scope search input (queries server dynamically 350ms after typing stops)
+      let searchDebounceTimer = null;
+      document.getElementById('report-search-input')?.addEventListener('input', () => {
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = setTimeout(() => {
+          ReportsStudio.runReport();
+        }, 350);
+      });
+
+      // Enter key on filters triggers immediate run
+      ['report-search-input', 'report-threshold-input', 'report-from', 'report-to', 'report-dept'].forEach(id => {
+        document.getElementById(id)?.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            clearTimeout(searchDebounceTimer);
+            ReportsStudio.runReport();
+          }
+        });
+      });
+    }
+
+    // Run report if table is currently empty
+    if (ReportsStudio.reportData.length === 0) {
+      ReportsStudio.runReport();
     }
   }
 
-  btnRunSmartReport?.addEventListener('click', runSmartReport);
-
-  // CSV Export handler (using token param)
-  btnExportSmartCsv?.addEventListener('click', () => {
-    const from = smartFromDate.value;
-    const to = smartToDate.value;
-    const deptId = smartDeptFilter.value;
-    const params = new URLSearchParams({ type: activeSmartReport, from, to, _token: authToken });
-    if (deptId) params.append('deptId', deptId);
-    window.location.href = `/api/reports/export/csv?${params.toString()}`;
-  });
+  // Backward compatibility alias for any legacy callers
+  function runSmartReport() {
+    initReportsStudio();
+  }
 
   // ─── 9. MODULE: SHIFTS & SCHEDULES ─────────────────────────────────────────
+  let cachedShifts = [];
+  let cachedSchedules = [];
+  let currentScheduleForAssignments = null;
+  let cachedAssignmentsList = [];
+
+  const shiftModal = document.getElementById('shift-modal');
+  const shiftModalTitle = document.getElementById('shift-modal-title');
+  const btnCloseShiftModal = document.getElementById('btn-close-shift-modal');
+  const btnCancelShift = document.getElementById('btn-cancel-shift');
+  const btnSaveShift = document.getElementById('btn-save-shift');
+  const btnOpenShiftModal = document.getElementById('btn-open-shift-modal');
+
+  const shiftFormId = document.getElementById('shift-form-id');
+  const shiftFormName = document.getElementById('shift-form-name');
+  const shiftFormStartTime = document.getElementById('shift-form-start-time');
+  const shiftFormEndTime = document.getElementById('shift-form-end-time');
+  const shiftFormCheckin1 = document.getElementById('shift-form-checkin1');
+  const shiftFormCheckin2 = document.getElementById('shift-form-checkin2');
+  const shiftFormCheckout1 = document.getElementById('shift-form-checkout1');
+  const shiftFormCheckout2 = document.getElementById('shift-form-checkout2');
+  const shiftFormLateMins = document.getElementById('shift-form-late-mins');
+  const shiftFormEarlyMins = document.getElementById('shift-form-early-mins');
+  const shiftFormWorkday = document.getElementById('shift-form-workday');
+
+  const scheduleModal = document.getElementById('schedule-modal');
+  const scheduleModalTitle = document.getElementById('schedule-modal-title');
+  const btnCloseScheduleModal = document.getElementById('btn-close-schedule-modal');
+  const btnCancelSched = document.getElementById('btn-cancel-sched');
+  const btnSaveSched = document.getElementById('btn-save-sched');
+  const btnOpenScheduleModal = document.getElementById('btn-open-schedule-modal');
+
+  const schedFormId = document.getElementById('sched-form-id');
+  const schedFormName = document.getElementById('sched-form-name');
+  const schedFormStartDate = document.getElementById('sched-form-start-date');
+  const schedFormEndDate = document.getElementById('sched-form-end-date');
+  const scheduleDaysContainer = document.getElementById('schedule-days-container');
+
+  const scheduleAssignmentsModal = document.getElementById('schedule-assignments-modal');
+  const btnCloseSchedAssignModal = document.getElementById('btn-close-sched-assign-modal');
+  const btnCloseSchedAssignFooter = document.getElementById('btn-close-sched-assign-footer');
+  const schedAssignModalTitle = document.getElementById('sched-assign-modal-title');
+  const schedAssignModalSubtext = document.getElementById('sched-assign-modal-subtext');
+  const schedAssignEmpSelect = document.getElementById('sched-assign-emp-select');
+  const schedAssignStart = document.getElementById('sched-assign-start');
+  const schedAssignEnd = document.getElementById('sched-assign-end');
+  const btnSubmitSchedAssign = document.getElementById('btn-submit-sched-assign');
+  const schedAssignSearch = document.getElementById('sched-assign-search');
+  const schedAssignTbody = document.getElementById('sched-assign-tbody');
+  const schedAssignCount = document.getElementById('sched-assign-count');
+
+  const DAY_NAMES = [
+    { day: 1, name: 'Monday' },
+    { day: 2, name: 'Tuesday' },
+    { day: 3, name: 'Wednesday' },
+    { day: 4, name: 'Thursday' },
+    { day: 5, name: 'Friday' },
+    { day: 6, name: 'Saturday' },
+    { day: 7, name: 'Sunday' },
+  ];
+
   async function loadShifts() {
     const shiftsGrid = document.getElementById('shifts-grid');
     const schedulesGrid = document.getElementById('schedules-grid');
@@ -892,20 +1604,22 @@ document.addEventListener('DOMContentLoaded', () => {
         apiFetch('/api/schedules')
       ]);
 
-      const shifts = await shiftsRes.json();
-      const schedules = await schedRes.json();
+      cachedShifts = await shiftsRes.json();
+      cachedSchedules = await schedRes.json();
 
-      if (shifts.length === 0) {
+      const isAdmin = currentUser && currentUser.role === 'admin';
+
+      if (cachedShifts.length === 0) {
         shiftsGrid.innerHTML = '<div class="table-empty">No shift classes found</div>';
       } else {
-        shiftsGrid.innerHTML = shifts.map(s => {
+        shiftsGrid.innerHTML = cachedShifts.map(s => {
           const shiftName = s.name || s.SchName || ('Shift #' + s.id);
-          const startTime = s.start_time || (s.StartTime ? String(s.StartTime).substring(11, 16) : '08:00');
-          const endTime = s.end_time || (s.EndTime ? String(s.EndTime).substring(11, 16) : '17:00');
-          const checkIn1 = s.check_in_time1 || (s.CheckInTime1 ? String(s.CheckInTime1).substring(11, 16) : '--');
-          const checkIn2 = s.check_in_time2 || (s.CheckInTime2 ? String(s.CheckInTime2).substring(11, 16) : '--');
-          const checkOut1 = s.check_out_time1 || (s.CheckOutTime1 ? String(s.CheckOutTime1).substring(11, 16) : '--');
-          const checkOut2 = s.check_out_time2 || (s.CheckOutTime2 ? String(s.CheckOutTime2).substring(11, 16) : '--');
+          const startTime = s.start_time ? String(s.start_time).substring(0, 5) : '08:00';
+          const endTime = s.end_time ? String(s.end_time).substring(0, 5) : '17:00';
+          const checkIn1 = s.check_in_time1 ? String(s.check_in_time1).substring(0, 5) : '--';
+          const checkIn2 = s.check_in_time2 ? String(s.check_in_time2).substring(0, 5) : '--';
+          const checkOut1 = s.check_out_time1 ? String(s.check_out_time1).substring(0, 5) : '--';
+          const checkOut2 = s.check_out_time2 ? String(s.check_out_time2).substring(0, 5) : '--';
           const lateMin = s.late_grace_minutes != null ? s.late_grace_minutes : s.LateMinutes;
 
           return `
@@ -926,15 +1640,41 @@ document.addEventListener('DOMContentLoaded', () => {
                 <span>Grace / Auto Deduct:</span>
                 <span>${lateMin ? lateMin + ' min' : 'Standard'}</span>
               </div>
+              ${isAdmin ? `
+                <div class="card-actions-row">
+                  <button class="btn-card-action btn-edit-shift" data-id="${s.id}">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    Edit Shift
+                  </button>
+                  <button class="btn-card-action btn-action-danger btn-delete-shift" data-id="${s.id}" data-name="${escapeHtml(shiftName)}">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                    Delete
+                  </button>
+                </div>
+              ` : ''}
             </div>
           `;
         }).join('');
+
+        shiftsGrid.querySelectorAll('.btn-edit-shift').forEach(b => {
+          b.addEventListener('click', () => {
+            const shift = cachedShifts.find(s => s.id === parseInt(b.dataset.id, 10));
+            if (shift) openShiftModal(shift);
+          });
+        });
+        shiftsGrid.querySelectorAll('.btn-delete-shift').forEach(b => {
+          b.addEventListener('click', () => {
+            openDeleteConfirm('Delete Shift Class', `Are you sure you want to delete shift <strong>${b.dataset.name}</strong>?`, () => {
+              deleteShift(parseInt(b.dataset.id, 10));
+            });
+          });
+        });
       }
 
-      if (schedules.length === 0) {
+      if (cachedSchedules.length === 0) {
         schedulesGrid.innerHTML = '<div class="table-empty">No active schedules configured</div>';
       } else {
-        schedulesGrid.innerHTML = schedules.map(sc => `
+        schedulesGrid.innerHTML = cachedSchedules.map(sc => `
           <div class="schedule-card">
             <div class="shift-card-header">
               <span class="shift-name">${escapeHtml(sc.name)}</span>
@@ -952,16 +1692,410 @@ document.addEventListener('DOMContentLoaded', () => {
               <span>Valid Period:</span>
               <span class="font-mono">${sc.start_date ? String(sc.start_date).slice(0, 10) : '2013-01-01'} → ${sc.end_date ? String(sc.end_date).slice(0, 10) : 'Ongoing'}</span>
             </div>
-            <div style="margin-top: 8px;">
-              <small style="color:var(--text-muted);">Active Personnel Rotation (${sc.active_user_count || 0} employees assigned)</small>
+            <div style="margin-top: 4px;">
+              <small style="color:var(--text-muted);">Weekly Rotation (${(sc.details && sc.details.length) || 0} active day rules configured)</small>
             </div>
+            ${isAdmin ? `
+              <div class="card-actions-row">
+                <button class="btn-card-action btn-action-primary btn-manage-assignments" data-id="${sc.id}">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle></svg>
+                  Personnel (${sc.active_user_count || 0})
+                </button>
+                <button class="btn-card-action btn-edit-schedule" data-id="${sc.id}">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  Edit
+                </button>
+                <button class="btn-card-action btn-action-danger btn-delete-schedule" data-id="${sc.id}" data-name="${escapeHtml(sc.name)}">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                  Delete
+                </button>
+              </div>
+            ` : ''}
           </div>
         `).join('');
+
+        schedulesGrid.querySelectorAll('.btn-manage-assignments').forEach(b => {
+          b.addEventListener('click', () => {
+            const sched = cachedSchedules.find(s => s.id === parseInt(b.dataset.id, 10));
+            if (sched) openScheduleAssignmentsModal(sched);
+          });
+        });
+        schedulesGrid.querySelectorAll('.btn-edit-schedule').forEach(b => {
+          b.addEventListener('click', () => {
+            const sched = cachedSchedules.find(s => s.id === parseInt(b.dataset.id, 10));
+            if (sched) openScheduleModal(sched);
+          });
+        });
+        schedulesGrid.querySelectorAll('.btn-delete-schedule').forEach(b => {
+          b.addEventListener('click', () => {
+            openDeleteConfirm('Delete Schedule', `Are you sure you want to delete schedule <strong>${b.dataset.name}</strong>? Assigned employees will be unassigned.`, () => {
+              deleteSchedule(parseInt(b.dataset.id, 10));
+            });
+          });
+        });
       }
     } catch (e) {
       shiftsGrid.innerHTML = `<div class="table-empty" style="color:var(--accent-rose)">Error loading shifts: ${escapeHtml(e.message)}</div>`;
     }
   }
+
+  // Shift Modal
+  function openShiftModal(shift = null) {
+    if (!shiftModal) return;
+    if (shift) {
+      shiftModalTitle.textContent = 'Edit Shift Class';
+      shiftFormId.value = shift.id;
+      shiftFormName.value = shift.name || shift.SchName || '';
+      shiftFormStartTime.value = shift.start_time ? String(shift.start_time).substring(0, 5) : '08:00';
+      shiftFormEndTime.value = shift.end_time ? String(shift.end_time).substring(0, 5) : '17:00';
+      shiftFormCheckin1.value = shift.check_in_time1 ? String(shift.check_in_time1).substring(0, 5) : '07:30';
+      shiftFormCheckin2.value = shift.check_in_time2 ? String(shift.check_in_time2).substring(0, 5) : '09:00';
+      shiftFormCheckout1.value = shift.check_out_time1 ? String(shift.check_out_time1).substring(0, 5) : '16:45';
+      shiftFormCheckout2.value = shift.check_out_time2 ? String(shift.check_out_time2).substring(0, 5) : '19:00';
+      shiftFormLateMins.value = shift.late_grace_minutes != null ? shift.late_grace_minutes : 15;
+      shiftFormEarlyMins.value = shift.early_grace_minutes != null ? shift.early_grace_minutes : 5;
+      shiftFormWorkday.value = shift.work_day_fraction != null ? shift.work_day_fraction : 1.0;
+    } else {
+      shiftModalTitle.textContent = 'Add Shift Class';
+      shiftFormId.value = '';
+      shiftFormName.value = '';
+      shiftFormStartTime.value = '08:00';
+      shiftFormEndTime.value = '17:00';
+      shiftFormCheckin1.value = '07:30';
+      shiftFormCheckin2.value = '09:00';
+      shiftFormCheckout1.value = '16:45';
+      shiftFormCheckout2.value = '19:00';
+      shiftFormLateMins.value = '15';
+      shiftFormEarlyMins.value = '5';
+      shiftFormWorkday.value = '1.0';
+    }
+    shiftModal.style.display = 'flex';
+  }
+
+  async function saveShift() {
+    const name = shiftFormName.value.trim();
+    const start_time = shiftFormStartTime.value;
+    const end_time = shiftFormEndTime.value;
+    if (!name || !start_time || !end_time) {
+      showToast('Shift Name, Start Time, and End Time are required', 'error');
+      return;
+    }
+
+    const payload = {
+      name,
+      start_time,
+      end_time,
+      check_in_time1: shiftFormCheckin1.value || null,
+      check_in_time2: shiftFormCheckin2.value || null,
+      check_out_time1: shiftFormCheckout1.value || null,
+      check_out_time2: shiftFormCheckout2.value || null,
+      late_grace_minutes: parseInt(shiftFormLateMins.value, 10) || 0,
+      early_grace_minutes: parseInt(shiftFormEarlyMins.value, 10) || 0,
+      work_day_fraction: parseFloat(shiftFormWorkday.value) || 1.0
+    };
+
+    const editId = shiftFormId.value;
+    try {
+      const url = editId ? `/api/shifts/${editId}` : '/api/shifts';
+      const method = editId ? 'PUT' : 'POST';
+      const res = await apiFetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to save shift');
+      }
+      showToast(editId ? 'Shift class updated' : 'Shift class created', 'success');
+      shiftModal.style.display = 'none';
+      loadShifts();
+    } catch (e) {
+      showToast(e.message, 'error');
+    }
+  }
+
+  async function deleteShift(id) {
+    try {
+      const res = await apiFetch(`/api/shifts/${id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to delete shift');
+      }
+      showToast('Shift class deleted', 'success');
+      loadShifts();
+    } catch (e) {
+      showToast(e.message, 'error');
+    }
+  }
+
+  // Schedule Modal
+  function openScheduleModal(schedule = null) {
+    if (!scheduleModal) return;
+    if (schedule) {
+      scheduleModalTitle.textContent = 'Edit Schedule';
+      schedFormId.value = schedule.id;
+      schedFormName.value = schedule.name || '';
+      schedFormStartDate.value = schedule.start_date ? String(schedule.start_date).slice(0, 10) : '2026-01-01';
+      schedFormEndDate.value = schedule.end_date ? String(schedule.end_date).slice(0, 10) : '2200-12-31';
+    } else {
+      scheduleModalTitle.textContent = 'Add Schedule';
+      schedFormId.value = '';
+      schedFormName.value = '';
+      schedFormStartDate.value = new Date().toISOString().slice(0, 10);
+      schedFormEndDate.value = '2200-12-31';
+    }
+
+    // Build day-by-day mapping rows
+    const shiftOptions = cachedShifts.map(s => {
+      const sName = s.name || s.SchName || ('Shift #' + s.id);
+      const st = s.start_time ? String(s.start_time).substring(0, 5) : '';
+      const et = s.end_time ? String(s.end_time).substring(0, 5) : '';
+      return `<option value="${s.id}">${escapeHtml(sName)} (${st} - ${et})</option>`;
+    }).join('');
+
+    const detailsMap = {};
+    if (schedule && Array.isArray(schedule.details)) {
+      schedule.details.forEach(d => {
+        detailsMap[d.start_day] = d.shift_class_id;
+      });
+    }
+
+    scheduleDaysContainer.innerHTML = DAY_NAMES.map(d => {
+      return `
+        <div class="schedule-day-row">
+          <span class="schedule-day-label">${d.name}</span>
+          <select class="schedule-day-select" data-day="${d.day}">
+            <option value="">Off / Rest Day</option>
+            ${shiftOptions}
+          </select>
+        </div>
+      `;
+    }).join('');
+
+    // Pre-select saved shift classes
+    scheduleDaysContainer.querySelectorAll('.schedule-day-select').forEach(sel => {
+      const day = parseInt(sel.dataset.day, 10);
+      if (detailsMap[day]) {
+        sel.value = detailsMap[day];
+      }
+    });
+
+    scheduleModal.style.display = 'flex';
+  }
+
+  async function saveSchedule() {
+    const name = schedFormName.value.trim();
+    if (!name) {
+      showToast('Schedule name is required', 'error');
+      return;
+    }
+
+    const details = [];
+    scheduleDaysContainer.querySelectorAll('.schedule-day-select').forEach(sel => {
+      const shiftId = sel.value;
+      if (shiftId) {
+        const day = parseInt(sel.dataset.day, 10);
+        details.push({
+          start_day: day,
+          end_day: day,
+          shift_class_id: parseInt(shiftId, 10)
+        });
+      }
+    });
+
+    const payload = {
+      name,
+      start_date: schedFormStartDate.value || '2026-01-01',
+      end_date: schedFormEndDate.value || '2200-12-31',
+      cycle: 1,
+      units: 1,
+      details
+    };
+
+    const editId = schedFormId.value;
+    try {
+      const url = editId ? `/api/schedules/${editId}` : '/api/schedules';
+      const method = editId ? 'PUT' : 'POST';
+      const res = await apiFetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to save schedule');
+      }
+      showToast(editId ? 'Schedule updated' : 'Schedule created', 'success');
+      scheduleModal.style.display = 'none';
+      loadShifts();
+    } catch (e) {
+      showToast(e.message, 'error');
+    }
+  }
+
+  async function deleteSchedule(id) {
+    try {
+      const res = await apiFetch(`/api/schedules/${id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to delete schedule');
+      }
+      showToast('Schedule deleted', 'success');
+      loadShifts();
+    } catch (e) {
+      showToast(e.message, 'error');
+    }
+  }
+
+  // Schedule Assignments Modal
+  async function openScheduleAssignmentsModal(schedule) {
+    if (!scheduleAssignmentsModal) return;
+    currentScheduleForAssignments = schedule;
+    schedAssignModalTitle.textContent = `Assigned Personnel: ${schedule.name}`;
+    schedAssignModalSubtext.textContent = `Schedule #${schedule.id} · ${schedule.cycle_units || 'Weekly Cycle'}`;
+    schedAssignStart.value = new Date().toISOString().slice(0, 10);
+    schedAssignEnd.value = '2200-12-31';
+    if (schedAssignSearch) schedAssignSearch.value = '';
+
+    scheduleAssignmentsModal.style.display = 'flex';
+    populateAssignEmployeeSelect();
+    loadScheduleRoster(schedule.id);
+  }
+
+  async function populateAssignEmployeeSelect() {
+    try {
+      const res = await apiFetch('/api/employees');
+      const emps = await res.json();
+      schedAssignEmpSelect.innerHTML = '<option value="">-- Choose Employee --</option>' + emps.map(e => `
+        <option value="${e.user_id}">
+          ${escapeHtml(e.name)} (Badge: ${escapeHtml(e.badge_number || '—')}${e.dept_name ? ' · ' + escapeHtml(e.dept_name) : ''})
+        </option>
+      `).join('');
+    } catch (e) {
+      schedAssignEmpSelect.innerHTML = '<option value="">Failed to load employees</option>';
+    }
+  }
+
+  async function loadScheduleRoster(scheduleId) {
+    if (!schedAssignTbody) return;
+    schedAssignTbody.innerHTML = '<tr><td colspan="5" class="table-empty">Loading roster...</td></tr>';
+    try {
+      const res = await apiFetch(`/api/schedules/${scheduleId}/assignments`);
+      cachedAssignmentsList = await res.json();
+      renderScheduleRoster();
+    } catch (e) {
+      schedAssignTbody.innerHTML = `<tr><td colspan="5" class="table-empty" style="color:var(--accent-rose)">Error: ${escapeHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function renderScheduleRoster() {
+    if (!schedAssignTbody) return;
+    const filter = (schedAssignSearch?.value || '').toLowerCase().trim();
+    const filtered = cachedAssignmentsList.filter(u => {
+      if (!filter) return true;
+      return (u.name && u.name.toLowerCase().includes(filter)) ||
+             (u.badge_number && String(u.badge_number).toLowerCase().includes(filter)) ||
+             (u.dept_name && u.dept_name.toLowerCase().includes(filter));
+    });
+
+    if (schedAssignCount) schedAssignCount.textContent = filtered.length;
+
+    if (filtered.length === 0) {
+      schedAssignTbody.innerHTML = '<tr><td colspan="5" class="table-empty">No employees currently assigned</td></tr>';
+      return;
+    }
+
+    schedAssignTbody.innerHTML = filtered.map(u => {
+      const sDate = u.start_date ? String(u.start_date).slice(0, 10) : 'Ongoing';
+      const eDate = u.end_date ? String(u.end_date).slice(0, 10) : 'Ongoing';
+      return `
+        <tr>
+          <td>
+            <strong>${escapeHtml(u.name)}</strong>
+          </td>
+          <td><span class="badge-number font-mono">${escapeHtml(u.badge_number || '—')}</span></td>
+          <td>${escapeHtml(u.dept_name || 'General')}</td>
+          <td class="font-mono" style="font-size:0.8rem;">${sDate} → ${eDate}</td>
+          <td style="text-align: right;">
+            <button class="btn-card-action btn-action-danger btn-unassign-emp" data-userid="${u.user_id}" data-name="${escapeHtml(u.name)}">
+              Remove
+            </button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    schedAssignTbody.querySelectorAll('.btn-unassign-emp').forEach(b => {
+      b.addEventListener('click', () => {
+        openDeleteConfirm('Remove From Schedule', `Unassign <strong>${b.dataset.name}</strong> from ${currentScheduleForAssignments.name}?`, () => {
+          unassignEmployeeFromSchedule(parseInt(b.dataset.userid, 10));
+        });
+      });
+    });
+  }
+
+  async function unassignEmployeeFromSchedule(userId) {
+    if (!currentScheduleForAssignments) return;
+    try {
+      const res = await apiFetch(`/api/schedules/${currentScheduleForAssignments.id}/assignments/${userId}`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) throw new Error('Failed to unassign employee');
+      showToast('Employee unassigned from schedule', 'success');
+      loadScheduleRoster(currentScheduleForAssignments.id);
+      loadShifts();
+    } catch (e) {
+      showToast(e.message, 'error');
+    }
+  }
+
+  btnSubmitSchedAssign?.addEventListener('click', async () => {
+    if (!currentScheduleForAssignments) return;
+    const userId = schedAssignEmpSelect.value;
+    if (!userId) {
+      showToast('Please select an employee to assign', 'error');
+      return;
+    }
+
+    try {
+      const res = await apiFetch(`/api/schedules/${currentScheduleForAssignments.id}/assignments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: parseInt(userId, 10),
+          start_date: schedAssignStart.value || null,
+          end_date: schedAssignEnd.value || null
+        })
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to assign employee');
+      }
+      showToast('Employee successfully assigned to schedule', 'success');
+      schedAssignEmpSelect.value = '';
+      loadScheduleRoster(currentScheduleForAssignments.id);
+      loadShifts();
+    } catch (e) {
+      showToast(e.message, 'error');
+    }
+  });
+
+  schedAssignSearch?.addEventListener('input', renderScheduleRoster);
+
+  // Modal Triggers
+  btnOpenShiftModal?.addEventListener('click', () => openShiftModal(null));
+  btnCloseShiftModal?.addEventListener('click', () => { shiftModal.style.display = 'none'; });
+  btnCancelShift?.addEventListener('click', () => { shiftModal.style.display = 'none'; });
+  btnSaveShift?.addEventListener('click', saveShift);
+
+  btnOpenScheduleModal?.addEventListener('click', () => openScheduleModal(null));
+  btnCloseScheduleModal?.addEventListener('click', () => { scheduleModal.style.display = 'none'; });
+  btnCancelSched?.addEventListener('click', () => { scheduleModal.style.display = 'none'; });
+  btnSaveSched?.addEventListener('click', saveSchedule);
+
+  btnCloseSchedAssignModal?.addEventListener('click', () => { scheduleAssignmentsModal.style.display = 'none'; });
+  btnCloseSchedAssignFooter?.addEventListener('click', () => { scheduleAssignmentsModal.style.display = 'none'; });
 
   // ─── 10. MODULE: LEAVE REQUESTS & MANAGEMENT ──────────────────────────────
   const leavesTbody = document.getElementById('leaves-tbody');
@@ -1772,82 +2906,9 @@ document.addEventListener('DOMContentLoaded', () => {
   btnPunchPrev?.addEventListener('click', () => { if (punchPage > 1) { punchPage--; loadPunches(); } });
   btnPunchNext?.addEventListener('click', () => { punchPage++; loadPunches(); });
 
-  // ─── 17. MODULE: PAIRED SHIFTS REPORT ─────────────────────────────────────
-  const reportFrom = document.getElementById('report-from');
-  const reportTo = document.getElementById('report-to');
-  const reportDept = document.getElementById('report-dept');
-  const btnGenerateReport = document.getElementById('btn-generate-report');
-  const btnExportCsv = document.getElementById('btn-export-csv');
-  const reportsTbody = document.getElementById('reports-tbody');
+  // ─── 17. MODULE: REPORTS STUDIO (DELEGATED TO MODULE 8) ───────────────────
+  // All report generation, column customization, export, and presets are unified in ReportsStudio (Module 8).
 
-  btnGenerateReport?.addEventListener('click', async () => {
-    const from = reportFrom.value;
-    const to = reportTo.value;
-    if (!from || !to) {
-      showToast('Please select both From and To dates', 'error');
-      return;
-    }
-
-    reportsTbody.innerHTML = '<tr><td colspan="8" class="table-empty">Generating report...</td></tr>';
-    btnExportCsv.disabled = true;
-
-    try {
-      const params = new URLSearchParams({ from, to });
-      if (reportDept.value) params.append('deptId', reportDept.value);
-
-      const res = await apiFetch(`/api/reports/daily?${params.toString()}`);
-      reportData = await res.json();
-
-      if (!reportData.length) {
-        reportsTbody.innerHTML = '<tr><td colspan="8" class="table-empty">No records found for period</td></tr>';
-        return;
-      }
-
-      btnExportCsv.disabled = false;
-      reportsTbody.innerHTML = reportData.map(r => `
-        <tr>
-          <td><strong>${r.date}</strong></td>
-          <td><span class="badge-number font-mono">${escapeHtml(r.badge_number || r.user_id)}</span></td>
-          <td>${escapeHtml(r.name)}</td>
-          <td>${escapeHtml(r.dept_name || 'General')}</td>
-          <td class="font-mono">${formatTime(r.first_in)}</td>
-          <td class="font-mono">${formatTime(r.last_out)}</td>
-          <td>${r.punch_count}</td>
-          <td><strong style="color:var(--accent-cyan);">${r.total_hours !== null ? r.total_hours + ' hrs' : '--'}</strong></td>
-        </tr>
-      `).join('');
-    } catch (e) {
-      reportsTbody.innerHTML = '<tr><td colspan="8" class="table-empty" style="color:var(--accent-rose)">Error generating report</td></tr>';
-    }
-  });
-
-  btnExportCsv?.addEventListener('click', () => {
-    if (!reportData || !reportData.length) return;
-    const headers = ['Date', 'Badge #', 'Employee Name', 'Department', 'First In', 'Last Out', 'Total Punches', 'Total Hours'];
-    const csvRows = [headers.join(',')];
-
-    for (const r of reportData) {
-      const row = [
-        r.date,
-        `"${r.badge_number || r.user_id}"`,
-        `"${(r.name || '').replace(/"/g, '""')}"`,
-        `"${(r.dept_name || '').replace(/"/g, '""')}"`,
-        r.first_in ? `"${new Date(r.first_in).toLocaleTimeString()}"` : '""',
-        r.last_out ? `"${new Date(r.last_out).toLocaleTimeString()}"` : '""',
-        r.punch_count,
-        r.total_hours !== null ? r.total_hours : '""'
-      ];
-      csvRows.push(row.join(','));
-    }
-
-    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `Attendance_Report_${reportFrom.value}_to_${reportTo.value}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  });
 
   // ─── 18. MODULE: CLOCK DEVICES ────────────────────────────────────────────
   const devicesTbody = document.getElementById('devices-tbody');
@@ -1995,6 +3056,9 @@ document.addEventListener('DOMContentLoaded', () => {
         <td><span class="punch-count-pill">${Number(d.punch_count).toLocaleString()}</span></td>
         <td>
           <div class="table-actions">
+            <button class="btn-icon sync-device" data-id="${d.id}" data-alias="${escapeHtml(d.alias || d.sn)}" title="Direct Sync users & punches (port 4370)">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21.5 2v6h-6"/><path d="M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+            </button>
             <button class="btn-icon ping" data-id="${d.id}" data-alias="${escapeHtml(d.alias || d.sn)}" title="Test connection (port 4370)">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
             </button>
@@ -2008,6 +3072,15 @@ document.addEventListener('DOMContentLoaded', () => {
         </td>
       </tr>
     `).join('');
+
+    devicesTbody.querySelectorAll('.btn-icon.sync-device').forEach(btn => {
+      btn.addEventListener('click', () => {
+        btn.classList.add('spinning');
+        syncSingleDeviceAction(parseInt(btn.dataset.id, 10), btn.dataset.alias).finally(() => {
+          btn.classList.remove('spinning');
+        });
+      });
+    });
 
     devicesTbody.querySelectorAll('.btn-icon.ping').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -2127,6 +3200,42 @@ document.addEventListener('DOMContentLoaded', () => {
     checkAllDeviceConnections();
   });
 
+  async function syncSingleDeviceAction(id, alias) {
+    showToast(`Syncing with clock "${alias}" over network (port 4370)...`, 'info');
+    try {
+      const res = await apiFetch(`/api/devices/${id}/sync`, { method: 'POST' });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Device sync failed');
+      const r = data.result;
+      showToast(`Synced "${alias}": ${r.usersRead} users (${r.usersUpserted} updated), ${r.punchesInserted} new punches in ${r.durationMs}ms.`, 'success');
+      loadDevices();
+      loadEmployees();
+    } catch (e) {
+      showToast(`Sync failed for "${alias}": ${e.message}`, 'error');
+    }
+  }
+
+  const btnSyncAllDevices = document.getElementById('btn-sync-all-devices');
+  btnSyncAllDevices?.addEventListener('click', async () => {
+    btnSyncAllDevices.disabled = true;
+    btnSyncAllDevices.classList.add('loading');
+    showToast('Directly syncing with all active biometric clocks...', 'info');
+    try {
+      const res = await apiFetch('/api/devices/sync-all', { method: 'POST' });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Batch device sync failed');
+      const r = data.result;
+      showToast(`Device sync completed: ${r.successfulDevices}/${r.totalDevices} active clocks synced in ${(r.durationMs/1000).toFixed(1)}s.`, 'success');
+      loadDevices();
+      loadEmployees();
+    } catch (e) {
+      showToast(`Batch device sync failed: ${e.message}`, 'error');
+    } finally {
+      btnSyncAllDevices.disabled = false;
+      btnSyncAllDevices.classList.remove('loading');
+    }
+  });
+
   deviceSearchInput?.addEventListener('input', () => renderDevices(allDevices));
 
   // ─── 19. MODULE: USERS ADMINISTRATION (PERSONNEL) ─────────────────────────
@@ -2144,6 +3253,27 @@ document.addEventListener('DOMContentLoaded', () => {
   const userFormName = document.getElementById('user-form-name');
   const userFormDept = document.getElementById('user-form-dept');
   const userFormGender = document.getElementById('user-form-gender');
+  const userFormSchedule = document.getElementById('user-form-schedule');
+
+  async function populateUserFormSchedules(selectedId = null) {
+    if (!userFormSchedule) return;
+    try {
+      if (!cachedSchedules || cachedSchedules.length === 0) {
+        const res = await apiFetch('/api/schedules');
+        cachedSchedules = await res.json();
+      }
+      userFormSchedule.innerHTML = '<option value="">No Schedule (Unassigned)</option>' + cachedSchedules.map(s => `
+        <option value="${s.id}">${escapeHtml(s.name)} (#${s.id})</option>
+      `).join('');
+      if (selectedId) {
+        userFormSchedule.value = selectedId;
+      } else {
+        userFormSchedule.value = '';
+      }
+    } catch (e) {
+      console.warn('Failed to load schedules for user form', e);
+    }
+  }
 
   async function loadUsersAdmin() {
     if (!usersAdminTbody) return;
@@ -2209,12 +3339,14 @@ document.addEventListener('DOMContentLoaded', () => {
       userFormId.disabled = true;
       try {
         const res = await apiFetch(`/api/employees/${id}`);
-        const u = await res.json();
+        const data = await res.json();
+        const u = data.employee || data;
         userFormId.value = u.user_id;
         userFormBadge.value = u.badge_number || '';
         userFormName.value = u.name || '';
         userFormDept.value = u.dept_id || '';
         userFormGender.value = u.gender || '';
+        await populateUserFormSchedules(u.schedule_id || null);
       } catch (e) {
         showToast('Error loading user details', 'error');
       }
@@ -2226,6 +3358,7 @@ document.addEventListener('DOMContentLoaded', () => {
       userFormName.value = '';
       userFormDept.value = '';
       userFormGender.value = '';
+      await populateUserFormSchedules(null);
     }
     userModal.style.display = 'flex';
   }
@@ -2253,6 +3386,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const name = userFormName.value.trim();
     const dept_id = userFormDept.value ? parseInt(userFormDept.value, 10) : null;
     const gender = userFormGender.value || null;
+    const schedule_id = userFormSchedule && userFormSchedule.value ? parseInt(userFormSchedule.value, 10) : null;
 
     if (!user_id || !name) {
       showToast('User ID and Full Name are required', 'error');
@@ -2265,16 +3399,17 @@ document.addEventListener('DOMContentLoaded', () => {
       const res = await apiFetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: parseInt(user_id, 10), badge_number, name, dept_id, gender })
+        body: JSON.stringify({ user_id: parseInt(user_id, 10), badge_number, name, dept_id, gender, schedule_id })
       });
       if (!res.ok) {
         const d = await res.json();
         throw new Error(d.error || 'Failed to save staff member');
       }
-      showToast(userEditId ? 'Personnel updated' : 'Personnel added', 'success');
+      showToast(userEditId ? 'Staff member updated' : 'Staff member created', 'success');
       userModal.style.display = 'none';
       loadUsersAdmin();
       loadEmployeesForSelects();
+      loadShifts();
     } catch (e) {
       showToast(e.message, 'error');
     }
@@ -2306,35 +3441,48 @@ document.addEventListener('DOMContentLoaded', () => {
 
     try {
       const res = await apiFetch(`/api/employees/${userId}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      modalEmpAvatar.textContent = (data.name || '?').charAt(0);
-      modalEmpName.textContent = data.name;
-      modalEmpDetails.textContent = `Badge #${data.badge_number || data.user_id} • ${data.dept_name || 'General'}`;
+      const emp = data.employee || data;
+      const dailySummary = data.dailySummary || data.dailyAttendance || [];
+      const rawPunches = data.rawPunches || data.punches || [];
 
-      if (!data.dailySummary.length) {
+      modalEmpAvatar.textContent = (emp.name || '?').charAt(0).toUpperCase();
+      modalEmpName.textContent = emp.name || `Employee ${userId}`;
+      modalEmpDetails.textContent = `Badge #${emp.badge_number || emp.user_id || userId} • ${emp.dept_name || 'General'}`;
+
+      if (!dailySummary.length) {
         modalSummaryTbody.innerHTML = '<tr><td colspan="5" class="table-empty">No paired shift summary available</td></tr>';
       } else {
-        modalSummaryTbody.innerHTML = data.dailySummary.map(d => `
-          <tr>
-            <td><strong>${d.date}</strong></td>
-            <td class="font-mono">${formatTime(d.first_in)}</td>
-            <td class="font-mono">${formatTime(d.last_out)}</td>
-            <td>${d.punch_count}</td>
-            <td><strong style="color:var(--accent-cyan);">${d.hours_worked !== null ? d.hours_worked + 'h' : '--'}</strong></td>
-          </tr>
-        `).join('');
+        modalSummaryTbody.innerHTML = dailySummary.map(d => {
+          const hours = d.hours_worked !== undefined && d.hours_worked !== null 
+            ? d.hours_worked 
+            : (d.total_hours !== undefined && d.total_hours !== null ? d.total_hours : null);
+          return `
+            <tr>
+              <td><strong>${d.date}</strong></td>
+              <td class="font-mono">${formatTime(d.first_in)}</td>
+              <td class="font-mono">${d.last_out ? (formatTime(d.last_out) + (d.is_auto_out ? ' <span style="font-size:0.7rem; padding:1px 6px; border-radius:4px; background:rgba(245,158,11,0.15); color:var(--accent-amber); font-weight:600; border:1px solid rgba(245,158,11,0.3);" title="Auto-completed to shift end (no extra time)">Auto-End</span>' : '')) : '—'}</td>
+              <td>${d.punch_count}</td>
+              <td><strong style="color:var(--accent-cyan);">${hours !== null ? hours + 'h' : '--'}</strong></td>
+            </tr>
+          `;
+        }).join('');
       }
 
-      if (!data.rawPunches.length) {
+      if (!rawPunches.length) {
         modalPunchesTbody.innerHTML = '<tr><td colspan="3" class="table-empty">No punch activity recorded</td></tr>';
       } else {
-        modalPunchesTbody.innerHTML = data.rawPunches.map(p => `
-          <tr>
-            <td class="font-mono">${formatTime(p.check_time)}</td>
-            <td><span class="status-pill status-${p.normalized_type}">${p.normalized_type.toUpperCase()}</span></td>
-            <td class="font-mono" style="color:var(--text-muted);">${escapeHtml(p.sn || '—')}</td>
-          </tr>
-        `).join('');
+        modalPunchesTbody.innerHTML = rawPunches.map(p => {
+          const normType = (p.normalized_type || (p.check_type === 'O' ? 'out' : 'in')).toLowerCase();
+          return `
+            <tr>
+              <td class="font-mono">${formatTime(p.check_time)}</td>
+              <td><span class="status-pill status-${normType}">${normType.toUpperCase()}</span></td>
+              <td class="font-mono" style="color:var(--text-muted);">${escapeHtml(p.sn || p.sensor_id || '—')}</td>
+            </tr>
+          `;
+        }).join('');
       }
     } catch (e) {
       modalEmpDetails.textContent = 'Error loading employee details';

@@ -193,6 +193,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (currentUser.role === 'viewer') {
       document.body.classList.add('role-viewer');
+      const adminOnlyTabs = ['shifts', 'leaves', 'corrections', 'devices', 'users-admin', 'app-users'];
+      if (adminOnlyTabs.includes(currentTab)) {
+        const liveBoardBtn = document.getElementById('nav-live-board');
+        if (liveBoardBtn) liveBoardBtn.click();
+      }
     } else {
       document.body.classList.remove('role-viewer');
     }
@@ -323,6 +328,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (target === 'smart-reports') target = 'reports';
       if (!titles[target]) return;
 
+      // Access control: prevent viewers from activating admin-only tabs
+      if (currentUser && currentUser.role === 'viewer' && btn.classList.contains('admin-only')) {
+        return;
+      }
+
       navButtons.forEach(b => b.classList.remove('active'));
       tabViews.forEach(v => v.classList.remove('active'));
 
@@ -339,6 +349,14 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   function switchTabLoader(target) {
+    if (currentUser && currentUser.role === 'viewer') {
+      const viewerAllowedTabs = ['live-board', 'dashboard', 'employees', 'punches', 'holidays', 'reports', 'smart-reports'];
+      if (!viewerAllowedTabs.includes(target)) {
+        console.warn(`[AccessControl] Navigation to tab "${target}" blocked for viewer role.`);
+        return;
+      }
+    }
+
     if (target === 'live-board')    loadLiveBoard();
     if (target === 'dashboard')    loadDashboard();
     if (target === 'employees')    loadEmployees();

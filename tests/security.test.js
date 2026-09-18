@@ -582,3 +582,115 @@ test('Mutation Testing: Reintroducing demo presets or hardcoded passwords must f
   assert.equal(mutantResult.token, 'btn-preset-admin');
 });
 
+// ─── 13. ROLE-BASED SIDEBAR MODULE VISIBILITY POLICY ─────────────────────────
+
+test('QA: Viewer role UI navigation policy restricts unauthorized modules', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const indexHtml = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
+
+  // Restricted items MUST have admin-only class
+  const restrictedItems = [
+    { id: 'nav-shifts', label: 'Shifts & Schedules' },
+    { id: 'nav-leaves', label: 'Leave Requests' },
+    { id: 'nav-corrections', label: 'Punch Corrections' },
+    { id: 'nav-devices', label: 'Clock Devices' },
+    { id: 'nav-users-admin', label: 'Personnel Admin' },
+    { id: 'nav-app-users', label: 'System Users' }
+  ];
+
+  for (const item of restrictedItems) {
+    const regex = new RegExp(`<button[^>]*class="[^"]*admin-only[^"]*"[^>]*id="${item.id}"|<button[^>]*id="${item.id}"[^>]*class="[^"]*admin-only[^"]*"`);
+    assert.ok(regex.test(indexHtml), `Navigation item #${item.id} (${item.label}) must contain admin-only class`);
+  }
+
+  // Administration section label MUST have admin-only class
+  assert.match(indexHtml, /<div class="nav-section-label admin-only">Administration<\/div>/);
+
+  // Visible items for viewer MUST NOT have admin-only class
+  const visibleItems = [
+    { id: 'nav-live-board', label: 'Live Board' },
+    { id: 'nav-dashboard', label: 'Dashboard' },
+    { id: 'nav-employees', label: 'Personnel' },
+    { id: 'nav-punches', label: 'Punch Log' },
+    { id: 'nav-holidays', label: 'Holiday Calendar' },
+    { id: 'nav-reports', label: 'Reports Studio' }
+  ];
+
+  for (const item of visibleItems) {
+    const itemMatch = indexHtml.match(new RegExp(`<button[^>]*id="${item.id}"[^>]*>`));
+    assert.ok(itemMatch, `Navigation item #${item.id} must exist`);
+    assert.equal(itemMatch[0].includes('admin-only'), false, `Navigation item #${item.id} (${item.label}) must NOT have admin-only class`);
+  }
+});
+
+test('Unit Tests: Viewer role allowed tab whitelist evaluation', () => {
+  const viewerAllowedTabs = ['live-board', 'dashboard', 'employees', 'punches', 'holidays', 'reports', 'smart-reports'];
+  const adminOnlyTabs = ['shifts', 'leaves', 'corrections', 'devices', 'users-admin', 'app-users'];
+
+  const isTabAllowedForViewer = (tab) => viewerAllowedTabs.includes(tab);
+
+  // Allowed tabs evaluate to true
+  for (const tab of viewerAllowedTabs) {
+    assert.equal(isTabAllowedForViewer(tab), true, `Tab ${tab} must be allowed for viewer`);
+  }
+
+  // Restricted tabs evaluate to false
+  for (const tab of adminOnlyTabs) {
+    assert.equal(isTabAllowedForViewer(tab), false, `Tab ${tab} must be blocked for viewer`);
+  }
+});
+
+test('Pickle Tests: Role-based navigation access control matrix serialization roundtrip', () => {
+  const aclMatrix = {
+    roles: ['admin', 'viewer'],
+    policies: {
+      admin: {
+        allowedTabs: ['*'],
+        canMutateHardware: true,
+        canManageUsers: true,
+      },
+      viewer: {
+        allowedTabs: ['live-board', 'dashboard', 'employees', 'punches', 'holidays', 'reports'],
+        canMutateHardware: false,
+        canManageUsers: false,
+      }
+    },
+    version: '2026.09.18'
+  };
+
+  const serialized = JSON.stringify(aclMatrix);
+  const deserialized = JSON.parse(serialized);
+
+  assert.deepEqual(deserialized, aclMatrix);
+  assert.equal(deserialized.policies.viewer.allowedTabs.length, 6);
+  assert.equal(deserialized.policies.viewer.canMutateHardware, false);
+});
+
+test('Mutation Testing: Stripping admin-only from restricted modules is detected', () => {
+  const validateNavPolicy = (html) => {
+    const restrictedIds = ['nav-shifts', 'nav-leaves', 'nav-corrections', 'nav-devices', 'nav-users-admin', 'nav-app-users'];
+    for (const id of restrictedIds) {
+      const match = html.match(new RegExp(`<button[^>]*id="${id}"[^>]*>`));
+      if (!match || !match[0].includes('admin-only')) {
+        return { compliant: false, leakedId: id };
+      }
+    }
+    return { compliant: true };
+  };
+
+  const fs = require('fs');
+  const path = require('path');
+  const indexHtml = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
+
+  // 1. Current production index.html passes
+  assert.equal(validateNavPolicy(indexHtml).compliant, true);
+
+  // 2. Mutant that forgets admin-only on nav-devices is caught
+  const mutantHtml = indexHtml.replace('class="nav-item admin-only" id="nav-devices"', 'class="nav-item" id="nav-devices"');
+  const mutantResult = validateNavPolicy(mutantHtml);
+  assert.equal(mutantResult.compliant, false);
+  assert.equal(mutantResult.leakedId, 'nav-devices');
+});
+
+

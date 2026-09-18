@@ -33,6 +33,7 @@ yarn-debug.log*
 tmp/
 temp/
 scratch/
+data/
 
 # OS and IDE configuration
 .DS_Store

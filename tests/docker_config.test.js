@@ -63,7 +63,7 @@ function inspectDockerCompose(content) {
   const hasDbHealthcheck = /mysqladmin\s+ping/i.test(content);
   const hasAppDependency = /condition:\s*service_healthy/i.test(content);
   const hasInitDbMount = /\.\/docker\/init-db:\/docker-entrypoint-initdb\.d/i.test(content);
-  const hasVolume = /db_data:/i.test(content);
+  const hasVolume = /db_data:|\.\/data\/mysql:\/var\/lib\/mysql/i.test(content);
   const hasNetwork = /timepulse-network:/i.test(content);
 
   const services = [];
@@ -138,7 +138,7 @@ test('Unit Tests: docker-compose.yml defines app and db services with correct li
   assert.ok(info.hasDbHealthcheck, 'MySQL service must define a mysqladmin ping healthcheck');
   assert.ok(info.hasAppDependency, 'App service must depend on db service with condition: service_healthy');
   assert.ok(info.hasInitDbMount, 'Compose must mount ./docker/init-db to /docker-entrypoint-initdb.d');
-  assert.ok(info.hasVolume, 'Compose must define named volume db_data for data persistence');
+  assert.ok(info.hasVolume, 'Compose must define storage persistence (named volume or bind mount)');
   assert.ok(info.hasNetwork, 'Compose must define custom network timepulse-network');
 });
 

@@ -518,3 +518,67 @@ test('Mutation Testing: Tampering with formula trigger detection must be detecte
   const prodOutput = sanitizeCsvCell('=HYPERLINK(...)');
   assert.equal(prodOutput.startsWith("\"'="), true, 'Production sanitizer must prefix apostrophe');
 });
+
+// ─── 12. UI CREDENTIAL HYGIENE & QUICK LOGIN REMOVAL ──────────────────────────
+
+test('QA: Login interface must not expose quick login buttons or hardcoded credentials', () => {
+  const fs = require('fs');
+  const path = require('path');
+
+  const indexHtml = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
+  const appJs = fs.readFileSync(path.join(__dirname, '../public/app.js'), 'utf8');
+
+  // Assert complete removal from index.html
+  assert.equal(indexHtml.includes('login-presets'), false, 'index.html must not contain login-presets container');
+  assert.equal(indexHtml.includes('btn-preset-admin'), false, 'index.html must not contain btn-preset-admin button');
+  assert.equal(indexHtml.includes('btn-preset-viewer'), false, 'index.html must not contain btn-preset-viewer button');
+  assert.equal(indexHtml.includes('Quick Logins'), false, 'index.html must not contain Quick Logins label');
+
+  // Assert complete removal of preset listeners and hardcoded credentials from app.js
+  assert.equal(appJs.includes('btn-preset-admin'), false, 'app.js must not reference btn-preset-admin');
+  assert.equal(appJs.includes('btn-preset-viewer'), false, 'app.js must not reference btn-preset-viewer');
+  assert.equal(appJs.includes('Admin@2026!'), false, 'app.js must not contain hardcoded Admin credentials');
+  assert.equal(appJs.includes('Viewer@2026!'), false, 'app.js must not contain hardcoded Viewer credentials');
+});
+
+test('Pickle Tests: Login credentials payload serialization roundtrip without preset contamination', () => {
+  const credentialsPayload = {
+    username: 'legitimate_operator',
+    password: 'UserSpecifiedPassword@2026#',
+    timestamp: Date.now(),
+    source: 'user_input'
+  };
+
+  const serialized = JSON.stringify(credentialsPayload);
+  const deserialized = JSON.parse(serialized);
+
+  assert.deepEqual(deserialized, credentialsPayload);
+  assert.equal(deserialized.source, 'user_input');
+  assert.equal('preset' in deserialized, false, 'Payload must not contain preset flag');
+});
+
+test('Mutation Testing: Reintroducing demo presets or hardcoded passwords must fail security checks', () => {
+  const validateUiHygiene = (htmlContent, jsContent) => {
+    const forbiddenTokens = ['btn-preset-admin', 'btn-preset-viewer', 'Admin@2026!', 'Viewer@2026!'];
+    for (const token of forbiddenTokens) {
+      if (htmlContent.includes(token) || jsContent.includes(token)) {
+        return { compliant: false, token };
+      }
+    }
+    return { compliant: true };
+  };
+
+  // 1. Current production files must be compliant
+  const fs = require('fs');
+  const path = require('path');
+  const indexHtml = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
+  const appJs = fs.readFileSync(path.join(__dirname, '../public/app.js'), 'utf8');
+  assert.equal(validateUiHygiene(indexHtml, appJs).compliant, true);
+
+  // 2. Mutant containing quick login must be rejected
+  const mutantJs = 'document.getElementById("btn-preset-admin").addEventListener("click", () => {});';
+  const mutantResult = validateUiHygiene(indexHtml, mutantJs);
+  assert.equal(mutantResult.compliant, false);
+  assert.equal(mutantResult.token, 'btn-preset-admin');
+});
+

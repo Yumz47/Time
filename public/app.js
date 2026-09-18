@@ -259,18 +259,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Demo presets
-  document.getElementById('btn-preset-admin')?.addEventListener('click', () => {
-    loginUsernameInput.value = 'admin';
-    loginPasswordInput.value = 'Admin@2026!';
-    loginForm.requestSubmit();
-  });
-  document.getElementById('btn-preset-viewer')?.addEventListener('click', () => {
-    loginUsernameInput.value = 'viewer';
-    loginPasswordInput.value = 'Viewer@2026!';
-    loginForm.requestSubmit();
-  });
-
   // Logout handler
   btnLogout.addEventListener('click', async () => {
     try {
@@ -378,7 +366,7 @@ document.addEventListener('DOMContentLoaded', () => {
           btnTriggerSync.classList.add('spinning');
         } else if (data.lastSync) {
           const syncDate = new Date(data.lastSync.sync_end || data.lastSync.sync_start);
-          bridgeLastSyncEl.textContent = `Last sync: ${syncDate.toLocaleTimeString()}`;
+          bridgeLastSyncEl.textContent = `Last sync: ${formatDateTime(syncDate)}`;
           btnTriggerSync.classList.remove('spinning');
         } else {
           bridgeLastSyncEl.textContent = 'Hardware clocks connected';
@@ -552,9 +540,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (date === todayStr) {
           liveLastUpdated.textContent = `Live: Today ${timeStr}`;
         } else {
-          liveLastUpdated.textContent = `Updated: ${date} ${timeStr}`;
+          liveLastUpdated.textContent = `Updated: ${formatDate(date)} ${timeStr}`;
         }
-        liveLastUpdated.title = `Live data refreshed at ${todayStr} ${timeStr}`;
+        liveLastUpdated.title = `Live data refreshed at ${formatDate(todayStr)} ${timeStr}`;
       }
 
       renderLiveBoard();
@@ -642,7 +630,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (liveDateInput) liveDateInput.value = getLocalDateString();
     loadLiveBoard();
     const now = new Date();
-    showToast(`Live board reset to today (${getLocalDateString(now)})`, 'info');
+    showToast(`Live board reset to today (${formatDate(now)})`, 'info');
   });
 
   liveDateInput?.addEventListener('change', () => loadLiveBoard());
@@ -678,12 +666,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const COLUMN_DEFS = {
     daily: [
-      { id: 'date', label: 'Date', default: true, render: r => `<strong>${r.date}</strong>`, getValue: r => r.date },
+      { id: 'date', label: 'Date', default: true, render: r => `<strong>${formatDate(r.date)}</strong>`, getValue: r => formatDate(r.date) },
       { id: 'badge_number', label: 'Badge #', default: true, render: r => `<span class="badge-number font-mono">${escapeHtml(r.badge_number || r.user_id)}</span>`, getValue: r => r.badge_number || r.user_id },
       { id: 'name', label: 'Personnel Name', default: true, render: r => `<strong>${escapeHtml(r.name)}</strong>`, getValue: r => r.name },
       { id: 'dept_name', label: 'Department', default: true, render: r => escapeHtml(r.dept_name || 'General'), getValue: r => r.dept_name || 'General' },
-      { id: 'first_in', label: 'First In', default: true, render: r => `<span class="font-mono">${formatTime(r.first_in)}</span>`, getValue: r => r.first_in ? new Date(r.first_in).toLocaleTimeString() : '' },
-      { id: 'last_out', label: 'Last Out', default: true, render: r => `<span class="font-mono">${formatTime(r.last_out)}</span>`, getValue: r => r.last_out ? new Date(r.last_out).toLocaleTimeString() : '' },
+      { id: 'first_in', label: 'First In', default: true, render: r => `<span class="font-mono">${r.first_in ? formatDateTime(r.first_in) : '--'}</span>`, getValue: r => r.first_in ? formatDateTime(r.first_in) : '' },
+      { id: 'last_out', label: 'Last Out', default: true, render: r => `<span class="font-mono">${r.last_out ? formatDateTime(r.last_out) : '--'}</span>`, getValue: r => r.last_out ? formatDateTime(r.last_out) : '' },
       { id: 'punch_count', label: 'Punches', default: true, render: r => `<span class="punch-count-pill">${r.punch_count}</span>`, getValue: r => r.punch_count },
       { id: 'total_hours', label: 'Total Hours', default: true, render: r => `<strong style="color:var(--accent-cyan);">${r.total_hours !== null && r.total_hours !== undefined ? r.total_hours + ' hrs' : '--'}</strong>`, getValue: r => r.total_hours !== null && r.total_hours !== undefined ? r.total_hours : '' },
       { id: 'status', label: 'Status', default: true, render: r => {
@@ -702,10 +690,10 @@ document.addEventListener('DOMContentLoaded', () => {
       { id: 'late_count', label: 'Late Count', default: true, render: r => `<span class="${Number(r.late_count) > 0 ? 'report-status-badge late' : 'report-status-badge on-time'}">${r.late_count}</span>`, getValue: r => r.late_count },
       { id: 'earliest_in', label: 'Earliest In', default: true, render: r => `<span class="font-mono">${r.earliest_in || '--'}</span>`, getValue: r => r.earliest_in || '' },
       { id: 'latest_in', label: 'Latest In', default: false, render: r => `<span class="font-mono">${r.latest_in || '--'}</span>`, getValue: r => r.latest_in || '' },
-      { id: 'last_seen', label: 'Last Seen', default: true, render: r => `<span class="font-mono" style="font-size:0.85rem">${r.last_seen ? formatDateTime(r.last_seen) : '--'}</span>`, getValue: r => r.last_seen || '' }
+      { id: 'last_seen', label: 'Last Seen', default: true, render: r => `<span class="font-mono" style="font-size:0.85rem">${r.last_seen ? formatDateTime(r.last_seen) : '--'}</span>`, getValue: r => r.last_seen ? formatDateTime(r.last_seen) : '' }
     ],
     late: [
-      { id: 'date', label: 'Date', default: true, render: r => `<strong>${r.date}</strong>`, getValue: r => r.date },
+      { id: 'date', label: 'Date', default: true, render: r => `<strong>${formatDate(r.date)}</strong>`, getValue: r => formatDate(r.date) },
       { id: 'badge_number', label: 'Badge #', default: true, render: r => `<span class="badge-number font-mono">${escapeHtml(r.badge_number || r.user_id)}</span>`, getValue: r => r.badge_number || r.user_id },
       { id: 'name', label: 'Employee', default: true, render: r => `<strong>${escapeHtml(r.name)}</strong>`, getValue: r => r.name },
       { id: 'dept_name', label: 'Department', default: true, render: r => escapeHtml(r.dept_name || 'General'), getValue: r => r.dept_name || 'General' },
@@ -718,16 +706,16 @@ document.addEventListener('DOMContentLoaded', () => {
       { id: 'badge_number', label: 'Badge #', default: true, render: r => `<span class="badge-number font-mono">${escapeHtml(r.badge_number || r.user_id)}</span>`, getValue: r => r.badge_number || r.user_id },
       { id: 'name', label: 'Employee', default: true, render: r => `<strong>${escapeHtml(r.name)}</strong>`, getValue: r => r.name },
       { id: 'dept_name', label: 'Department', default: true, render: r => escapeHtml(r.dept_name || 'General'), getValue: r => r.dept_name || 'General' },
-      { id: 'date', label: 'Target Date', default: true, render: (r, th, from) => from || '—', getValue: (r, th, from) => from || '' },
-      { id: 'last_known_punch', label: 'Last Known Punch', default: true, render: r => `<span style="color:var(--text-muted); font-size:0.85rem">${r.last_known_punch ? formatDateTime(r.last_known_punch) : 'Never recorded'}</span>`, getValue: r => r.last_known_punch || 'Never' },
+      { id: 'date', label: 'Target Date', default: true, render: (r, th, from) => formatDate(from) || '—', getValue: (r, th, from) => formatDate(from) || '' },
+      { id: 'last_known_punch', label: 'Last Known Punch', default: true, render: r => `<span style="color:var(--text-muted); font-size:0.85rem">${r.last_known_punch ? formatDateTime(r.last_known_punch) : 'Never recorded'}</span>`, getValue: r => r.last_known_punch ? formatDateTime(r.last_known_punch) : 'Never' },
       { id: 'status', label: 'Status', default: true, render: () => `<span class="report-status-badge absent">ABSENT</span>`, getValue: () => 'ABSENT' }
     ],
     overtime: [
-      { id: 'date', label: 'Date', default: true, render: r => `<strong>${r.date}</strong>`, getValue: r => r.date },
+      { id: 'date', label: 'Date', default: true, render: r => `<strong>${formatDate(r.date)}</strong>`, getValue: r => formatDate(r.date) },
       { id: 'badge_number', label: 'Badge #', default: true, render: r => `<span class="badge-number font-mono">${escapeHtml(r.badge_number || r.user_id)}</span>`, getValue: r => r.badge_number || r.user_id },
       { id: 'name', label: 'Employee', default: true, render: r => `<strong>${escapeHtml(r.name)}</strong>`, getValue: r => r.name },
       { id: 'dept_name', label: 'Department', default: true, render: r => escapeHtml(r.dept_name || 'General'), getValue: r => r.dept_name || 'General' },
-      { id: 'last_punch_time', label: 'Last Punch Out', default: true, render: r => `<span class="font-mono" style="color:var(--accent-cyan); font-weight:700;">${r.last_punch_time}</span>`, getValue: r => r.last_punch_time },
+      { id: 'last_punch_time', label: 'Last Punch Out', default: true, render: r => `<span class="font-mono" style="color:var(--accent-cyan); font-weight:700;">${r.last_punch_time ? ((r.last_punch_time.includes('-') || r.last_punch_time.includes('/')) ? formatDateTime(r.last_punch_time) : r.last_punch_time) : '--'}</span>`, getValue: r => r.last_punch_time ? ((r.last_punch_time.includes('-') || r.last_punch_time.includes('/')) ? formatDateTime(r.last_punch_time) : r.last_punch_time) : '' },
       { id: 'threshold', label: 'Shift End Threshold', default: true, render: (r, th) => `<span class="font-mono" style="color:var(--text-muted);">${th || '17:00'}</span>`, getValue: (r, th) => th || '17:00' },
       { id: 'overtime_duration', label: 'Overtime Duration', default: true, render: r => `<span class="report-status-badge overtime">+${r.overtime_duration}</span>`, getValue: r => r.overtime_duration },
       { id: 'status', label: 'Status', default: true, render: () => `<span class="report-status-badge overtime">OVERTIME</span>`, getValue: () => 'OVERTIME' }
@@ -740,7 +728,7 @@ document.addEventListener('DOMContentLoaded', () => {
       { id: 'status', label: 'Device Status', default: true, render: r => `<span class="device-status-badge ${r.status || r.device_status || 'active'}">${r.status || r.device_status || 'active'}</span>`, getValue: r => r.status || r.device_status || 'active' },
       { id: 'total_punches', label: 'Total Punches', default: true, render: r => `<span class="punch-count-pill">${Number(r.total_punches || 0).toLocaleString()}</span>`, getValue: r => r.total_punches || 0 },
       { id: 'unique_employees', label: 'Unique Personnel', default: true, render: r => `<strong>${r.unique_employees || r.unique_users || 0}</strong>`, getValue: r => r.unique_employees || r.unique_users || 0 },
-      { id: 'last_punch', label: 'Last Punch Time', default: true, render: r => `<span class="font-mono" style="font-size:0.85rem">${r.last_punch ? formatDateTime(r.last_punch) : 'None'}</span>`, getValue: r => r.last_punch || '' }
+      { id: 'last_punch', label: 'Last Punch Time', default: true, render: r => `<span class="font-mono" style="font-size:0.85rem">${r.last_punch ? formatDateTime(r.last_punch) : 'None'}</span>`, getValue: r => r.last_punch ? formatDateTime(r.last_punch) : '' }
     ]
   };
 
@@ -1730,7 +1718,7 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>
             <div class="shift-detail-row">
               <span>Valid Period:</span>
-              <span class="font-mono">${sc.start_date ? String(sc.start_date).slice(0, 10) : '2013-01-01'} → ${sc.end_date ? String(sc.end_date).slice(0, 10) : 'Ongoing'}</span>
+              <span class="font-mono">${sc.start_date ? formatDate(sc.start_date) : '01/01/2013'} → ${sc.end_date ? formatDate(sc.end_date) : 'Ongoing'}</span>
             </div>
             <div style="margin-top: 4px;">
               <small style="color:var(--text-muted);">Weekly Rotation (${(sc.details && sc.details.length) || 0} active day rules configured)</small>
@@ -2047,8 +2035,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     schedAssignTbody.innerHTML = filtered.map(u => {
-      const sDate = u.start_date ? String(u.start_date).slice(0, 10) : 'Ongoing';
-      const eDate = u.end_date ? String(u.end_date).slice(0, 10) : 'Ongoing';
+      const sDate = u.start_date ? formatDate(u.start_date) : 'Ongoing';
+      const eDate = u.end_date ? formatDate(u.end_date) : 'Ongoing';
       return `
         <tr>
           <td>
@@ -2186,8 +2174,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const statusClass = `status-${l.status}`;
         const days = l.duration_days ? `${l.duration_days} day(s)` : '--';
         const isAdmin = currentUser && currentUser.role === 'admin';
-        const startDate = l.start_date ? String(l.start_date).slice(0, 10) : '--';
-        const endDate = l.end_date ? String(l.end_date).slice(0, 10) : '--';
+        const startDate = l.start_date ? formatDate(l.start_date) : '--';
+        const endDate = l.end_date ? formatDate(l.end_date) : '--';
 
         return `
           <tr>
@@ -2360,8 +2348,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       holidaysGrid.innerHTML = list.map(h => {
-        const dateStr = h.date ? String(h.date).slice(0, 10) : '';
-        const dateObj = new Date(dateStr + 'T12:00:00');
+        const dateStr = h.date ? formatDate(h.date) : '';
+        const dateObj = new Date(h.date ? (String(h.date).slice(0, 10) + 'T12:00:00') : Date.now());
         const monthStr = dateObj.toLocaleDateString('en-US', { month: 'short' });
         const dayStr = dateObj.getDate();
         const weekdayStr = dateObj.toLocaleDateString('en-US', { weekday: 'long' });
@@ -2371,8 +2359,8 @@ document.addEventListener('DOMContentLoaded', () => {
           <div class="holiday-card">
             <div style="display:flex; align-items:center; gap:14px;">
               <div class="holiday-date-badge">
-                <span class="holiday-date-month">${monthStr}</span>
                 <span class="holiday-date-day">${dayStr}</span>
+                <span class="holiday-date-month">${monthStr}</span>
               </div>
               <div style="flex:1;">
                 <h3 style="font-size:1.05rem; font-weight:700;">${escapeHtml(h.name)}</h3>
@@ -2493,7 +2481,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const isDeleted = c.is_deleted === 1;
         return `
           <tr>
-            <td class="font-mono" style="color:var(--accent-cyan);">${formatTime(c.check_time)}</td>
+            <td class="font-mono" style="color:var(--accent-cyan);">${formatDateTime(c.check_time)}</td>
             <td>
               <strong>${escapeHtml(c.employee_name)}</strong>
               <div style="font-size:0.75rem; color:var(--text-muted)">Badge #${escapeHtml(c.badge_number || c.user_id)}</div>
@@ -2629,7 +2617,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <td>${escapeHtml(u.full_name || '—')}</td>
           <td><span class="status-pill ${u.role === 'admin' ? 'status-in' : 'status-out'}">${u.role.toUpperCase()}</span></td>
           <td><span class="device-status-badge ${u.is_active ? 'active' : 'inactive'}">${u.is_active ? '● Active' : '○ Inactive'}</span></td>
-          <td style="color:var(--text-muted); font-size:0.8rem">${u.created_at ? u.created_at.substring(0, 10) : '—'}</td>
+          <td style="color:var(--text-muted); font-size:0.8rem">${u.created_at ? formatDate(u.created_at) : '—'}</td>
           <td>
             <div class="table-actions">
               <button class="btn-icon edit" data-id="${u.id}" title="Edit User">
@@ -2784,7 +2772,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <span class="stream-name">${escapeHtml(p.name)}</span>
                 <span class="stream-details">${escapeHtml(p.dept_name || 'General')} • Badge #${escapeHtml(p.badge_number || p.user_id)}</span>
               </div>
-              <div class="stream-time font-mono">${formatTime(p.check_time)}</div>
+              <div class="stream-time font-mono">${formatDateTime(p.check_time)}</div>
             </div>
           `).join('');
         }
@@ -2921,7 +2909,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       punchesTbody.innerHTML = punches.map(p => `
         <tr>
-          <td class="font-mono"><strong>${formatTime(p.check_time)}</strong></td>
+          <td class="font-mono"><strong>${formatDateTime(p.check_time)}</strong></td>
           <td><span class="badge-number font-mono">${escapeHtml(p.badge_number || p.user_id)}</span></td>
           <td><strong>${escapeHtml(p.name || p.employee_name)}</strong></td>
           <td>${escapeHtml(p.dept_name || 'General')}</td>
@@ -3500,9 +3488,9 @@ document.addEventListener('DOMContentLoaded', () => {
             : (d.total_hours !== undefined && d.total_hours !== null ? d.total_hours : null);
           return `
             <tr>
-              <td><strong>${d.date}</strong></td>
-              <td class="font-mono">${formatTime(d.first_in)}</td>
-              <td class="font-mono">${d.last_out ? (formatTime(d.last_out) + (d.is_auto_out ? ' <span style="font-size:0.7rem; padding:1px 6px; border-radius:4px; background:rgba(245,158,11,0.15); color:var(--accent-amber); font-weight:600; border:1px solid rgba(245,158,11,0.3);" title="Auto-completed to shift end (no extra time)">Auto-End</span>' : '')) : '—'}</td>
+              <td><strong>${formatDate(d.date)}</strong></td>
+              <td class="font-mono">${d.first_in ? formatDateTime(d.first_in) : '--'}</td>
+              <td class="font-mono">${d.last_out ? (formatDateTime(d.last_out) + (d.is_auto_out ? ' <span style="font-size:0.7rem; padding:1px 6px; border-radius:4px; background:rgba(245,158,11,0.15); color:var(--accent-amber); font-weight:600; border:1px solid rgba(245,158,11,0.3);" title="Auto-completed to shift end (no extra time)">Auto-End</span>' : '')) : '—'}</td>
               <td>${d.punch_count}</td>
               <td><strong style="color:var(--accent-cyan);">${hours !== null ? hours + 'h' : '--'}</strong></td>
             </tr>
@@ -3517,7 +3505,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const normType = (p.normalized_type || (p.check_type === 'O' ? 'out' : 'in')).toLowerCase();
           return `
             <tr>
-              <td class="font-mono">${formatTime(p.check_time)}</td>
+              <td class="font-mono">${formatDateTime(p.check_time)}</td>
               <td><span class="status-pill status-${normType}">${normType.toUpperCase()}</span></td>
               <td class="font-mono" style="color:var(--text-muted);">${escapeHtml(p.sn || p.sensor_id || '—')}</td>
             </tr>
@@ -3567,15 +3555,52 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // ─── 22. UTILITIES ────────────────────────────────────────────────────────
-  function formatTime(isoStr) {
-    if (!isoStr) return '--';
-    try {
-      const d = new Date(isoStr);
-      if (isNaN(d.getTime())) return isoStr;
-      return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour12: false });
-    } catch (e) {
-      return isoStr;
+  function formatDate(input, separator = '/', fallback = '--') {
+    if (typeof window !== 'undefined' && window.DateHelper && typeof window.DateHelper.formatDate === 'function') {
+      return window.DateHelper.formatDate(input, separator, fallback);
     }
+    if (!input && input !== 0) return fallback;
+    try {
+      const parts = String(input).split('T')[0].split(' ')[0].split(/[-/]/);
+      if (parts.length === 3) {
+        if (parts[0].length === 4) return `${parts[2].padStart(2, '0')}${separator}${parts[1].padStart(2, '0')}${separator}${parts[0]}`;
+        return `${parts[0].padStart(2, '0')}${separator}${parts[1].padStart(2, '0')}${separator}${parts[2]}`;
+      }
+      const d = new Date(input);
+      if (isNaN(d.getTime())) return fallback;
+      return `${String(d.getDate()).padStart(2, '0')}${separator}${String(d.getMonth() + 1).padStart(2, '0')}${separator}${d.getFullYear()}`;
+    } catch (e) {
+      return fallback;
+    }
+  }
+
+  function formatDateTime(input, options = {}, fallback = '--') {
+    if (typeof window !== 'undefined' && window.DateHelper && typeof window.DateHelper.formatDateTime === 'function') {
+      return window.DateHelper.formatDateTime(input, options, fallback);
+    }
+    const dStr = formatDate(input, options.separator || '/', fallback);
+    if (dStr === fallback) return fallback;
+    try {
+      const d = new Date(input);
+      if (isNaN(d.getTime())) return dStr;
+      const h = String(d.getHours()).padStart(2, '0');
+      const m = String(d.getMinutes()).padStart(2, '0');
+      const s = String(d.getSeconds()).padStart(2, '0');
+      return options.includeSeconds === false ? `${dStr} ${h}:${m}` : `${dStr} ${h}:${m}:${s}`;
+    } catch (e) {
+      return dStr;
+    }
+  }
+
+  function formatTime(isoStr, fallback = '--') {
+    if (typeof window !== 'undefined' && window.DateHelper && typeof window.DateHelper.formatTime === 'function') {
+      return window.DateHelper.formatTime(isoStr, fallback);
+    }
+    if (!isoStr) return fallback;
+    if (typeof isoStr === 'string' && /^\d{1,2}:\d{2}(?::\d{2})?$/.test(isoStr.trim())) {
+      return isoStr.trim();
+    }
+    return formatDateTime(isoStr, { includeSeconds: true }, fallback);
   }
 
   function escapeHtml(str) {

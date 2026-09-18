@@ -1723,56 +1723,6 @@ body.light-theme input:-webkit-autofill:active {
   font-size: 0.85rem;
   margin-bottom: 16px;
 }
-
-.login-presets {
-  margin-top: 24px;
-  padding-top: 18px;
-  border-top: 1px solid var(--border-color);
-}
-
-.preset-label {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-weight: 600;
-  display: block;
-  margin-bottom: 10px;
-}
-
-.preset-buttons {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-
-.btn-preset {
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  padding: 8px 12px;
-  color: var(--text-primary);
-  text-align: left;
-  cursor: pointer;
-  transition: var(--transition-smooth);
-}
-
-.btn-preset:hover {
-  background: rgba(0, 210, 255, 0.08);
-  border-color: var(--accent-cyan);
-}
-
-.btn-preset strong {
-  display: block;
-  font-size: 0.85rem;
-  color: var(--accent-cyan);
-}
-
-.btn-preset small {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-}
-
 /* ─── 2. USER SESSION BADGE IN SIDEBAR ───────────────────────────────────────── */
 .user-session-card {
   display: flex;

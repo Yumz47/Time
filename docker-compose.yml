@@ -45,7 +45,7 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     ports:
-      - "127.0.0.1:${DB_PORT:-3306}:3306"
+      - "${DB_PORT:-3306}:3306"
     environment:
       TZ: ${TZ:-America/Belize}
       MYSQL_DATABASE: ${DB_NAME:-timeclock_db}
@@ -56,7 +56,7 @@ services:
       - db_data:/var/lib/mysql
       - ./docker/init-db:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u $$MYSQL_USER --password=$$MYSQL_PASSWORD || exit 1"]
+      test: [ "CMD-SHELL", "mysqladmin ping -h localhost -u $$MYSQL_USER --password=$$MYSQL_PASSWORD || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 5

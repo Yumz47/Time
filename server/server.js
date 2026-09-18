@@ -6,12 +6,24 @@ const cron = require('node-cron');
 const mysql = require('mysql2/promise');
 const crypto = require('crypto');
 const net = require('net');
-const { computeDailyAttendance, resolveNormalizedType } = require('../bridge/helpers');
+const { computeDailyAttendance, resolveNormalizedType, getLocalDateString } = require('../bridge/helpers');
 const { syncSingleDevice, syncAllActiveDevices } = require('../bridge/device_sync');
+const {
+  hashPassword,
+  verifyPassword,
+  isSafeDeviceIp,
+  sanitizeCsvCell,
+  sanitizeFilenameDate,
+  createRateLimiter,
+  securityHeadersMiddleware,
+  sanitizeErrorMessage,
+} = require('./security');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Security HTTP headers & middleware
+app.use(securityHeadersMiddleware);
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.resolve(__dirname, '../public')));
@@ -32,16 +44,9 @@ app.pool = pool;
 
 let isSyncInProgress = false;
 
-// ─── AUTH UTILITIES ────────────────────────────────────────────────────────────
+// ─── AUTH UTILITIES & RATE LIMITING ──────────────────────────────────────────
 
-/**
- * Hash password using SHA-256
- * @param {string} password
- * @returns {string}
- */
-function hashPassword(password) {
-  return crypto.createHash('sha256').update(password).digest('hex');
-}
+const loginLimiter = createRateLimiter({ windowMs: 5 * 60 * 1000, maxAttempts: 10 });
 
 /**
  * Generate a secure random session token
@@ -55,12 +60,15 @@ function generateToken() {
  * Middleware: require any authenticated user (admin or viewer)
  */
 async function requireAuth(req, res, next) {
-  let token = req.headers['x-auth-token'] || req.query._token;
+  let token = req.headers['x-auth-token'];
   if (!token && req.headers['authorization']) {
     const parts = req.headers['authorization'].split(' ');
     if (parts.length === 2 && parts[0].toLowerCase() === 'bearer') {
       token = parts[1];
     }
+  }
+  if (!token && req.query && req.query._token) {
+    token = req.query._token;
   }
   if (!token) return res.status(401).json({ error: 'Authentication required' });
 
@@ -77,7 +85,7 @@ async function requireAuth(req, res, next) {
     req.user = rows[0];
     next();
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 }
 
@@ -95,22 +103,38 @@ async function requireAdmin(req, res, next) {
 
 // ─── AUTH ENDPOINTS ────────────────────────────────────────────────────────────
 
-// A1. Login
-app.post('/api/auth/login', async (req, res) => {
+// A1. Login (with rate limiting and scrypt/SHA-256 dual verification + auto-upgrade)
+app.post('/api/auth/login', loginLimiter, async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password are required' });
   }
   try {
-    const hash = hashPassword(String(password));
+    const cleanUsername = String(username).trim().toLowerCase();
     const [rows] = await pool.query(
-      'SELECT * FROM app_users WHERE username = ? AND password_hash = ? AND is_active = 1',
-      [String(username).trim().toLowerCase(), hash]
+      'SELECT * FROM app_users WHERE username = ? AND is_active = 1',
+      [cleanUsername]
     );
     if (rows.length === 0) {
+      if (req.registerAuthFailure) req.registerAuthFailure();
       return res.status(401).json({ error: 'Invalid credentials' });
     }
+
     const user = rows[0];
+    const { valid, needsUpgrade } = verifyPassword(String(password), user.password_hash);
+    if (!valid) {
+      if (req.registerAuthFailure) req.registerAuthFailure();
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    if (req.registerAuthSuccess) req.registerAuthSuccess();
+
+    // Transparently upgrade legacy SHA-256 hash to scrypt
+    if (needsUpgrade) {
+      const newHash = hashPassword(String(password));
+      await pool.query('UPDATE app_users SET password_hash = ? WHERE id = ?', [newHash, user.id]);
+    }
+
     const token = generateToken();
     await pool.query(
       `INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 12 HOUR))`,
@@ -121,7 +145,7 @@ app.post('/api/auth/login', async (req, res) => {
       user: { id: user.id, username: user.username, full_name: user.full_name, role: user.role }
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
@@ -132,7 +156,7 @@ app.post('/api/auth/logout', requireAuth, async (req, res) => {
     await pool.query('DELETE FROM sessions WHERE token = ?', [token]);
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
@@ -172,16 +196,17 @@ app.post('/api/admin/app-users', requireAdmin, async (req, res) => {
     res.status(201).json({ success: true, id: result.insertId });
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Username already exists' });
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
-// AU3. Update app user
+// AU3. Update app user (revokes active sessions if password is changed or account deactivated)
 app.put('/api/admin/app-users/:id', requireAdmin, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const { full_name, role, is_active, password } = req.body;
   const validRoles = ['admin', 'viewer'];
   try {
+    const shouldRevokeSessions = (password && String(password).trim()) || is_active === false || is_active === 0;
     if (password && String(password).trim()) {
       const hash = hashPassword(String(password));
       await pool.query(
@@ -194,22 +219,26 @@ app.put('/api/admin/app-users/:id', requireAdmin, async (req, res) => {
         [String(full_name).trim(), validRoles.includes(role) ? role : 'viewer', is_active ? 1 : 0, id]
       );
     }
+    if (shouldRevokeSessions) {
+      await pool.query('DELETE FROM sessions WHERE user_id = ?', [id]);
+    }
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
-// AU4. Delete app user
+// AU4. Delete app user (revokes active sessions)
 app.delete('/api/admin/app-users/:id', requireAdmin, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (req.user.user_id === id) return res.status(400).json({ error: 'Cannot delete your own account' });
   try {
+    await pool.query('DELETE FROM sessions WHERE user_id = ?', [id]);
     const [result] = await pool.query('DELETE FROM app_users WHERE id = ?', [id]);
     if (result.affectedRows === 0) return res.status(404).json({ error: 'User not found' });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
@@ -218,7 +247,7 @@ app.delete('/api/admin/app-users/:id', requireAdmin, async (req, res) => {
 // L1. Live attendance: IN / OUT / ABSENT per employee
 app.get('/api/attendance/live', requireAuth, async (req, res) => {
   try {
-    const targetDate = req.query.date || new Date().toISOString().split('T')[0];
+    const targetDate = req.query.date || getLocalDateString();
     const deptId = req.query.dept_id ? parseInt(req.query.dept_id, 10) : null;
     const startOfDay = `${targetDate} 00:00:00`;
     const endOfDay = `${targetDate} 23:59:59`;
@@ -269,9 +298,10 @@ app.get('/api/attendance/live', requireAuth, async (req, res) => {
           const localHour = lastPunchDate.getHours();
 
           const now = new Date();
-          const targetIsPast = (targetDate < now.toISOString().split('T')[0]);
+          const todayStr = getLocalDateString(now);
+          const targetIsPast = (targetDate < todayStr);
           const currentHour = now.getHours() + now.getMinutes() / 60;
-          const shiftEndedToday = (targetDate === now.toISOString().split('T')[0] && currentHour >= 17.0);
+          const shiftEndedToday = (targetDate === todayStr && currentHour >= 17.0);
 
           if (targetIsPast || shiftEndedToday || (gapHours >= 4 && (localHour >= 16 || gapHours >= 7))) {
             status = 'out';
@@ -296,7 +326,14 @@ app.get('/api/attendance/live', requireAuth, async (req, res) => {
       currently_out: data.filter(r => r.status === 'out').length,
     };
 
-    res.json({ date: targetDate, summary, employees: data });
+    const now = new Date();
+    res.json({
+      date: targetDate,
+      server_time: now.toISOString(),
+      timestamp: now.toISOString(),
+      summary,
+      employees: data
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -506,21 +543,23 @@ app.get('/api/reports/export/csv', requireAuth, async (req, res) => {
       ORDER BY date DESC, e.name ASC
     `, params);
 
-    // Build CSV
+    // Build CSV with formula injection defense
     const headers = ['Badge', 'Employee Name', 'Department', 'Date', 'First Punch', 'Last Punch', 'Punches', 'Hours Span'];
     const csvRows = rows.map(r => [
       r.badge_number, r.name, r.dept_name || '', r.date,
       r.first_punch ? String(r.first_punch).replace('T', ' ').substring(0, 19) : '',
       r.last_punch ? String(r.last_punch).replace('T', ' ').substring(0, 19) : '',
       r.punch_count, r.hours_span
-    ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
+    ].map(v => sanitizeCsvCell(v)).join(','));
 
-    const csv = [headers.join(','), ...csvRows].join('\n');
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="attendance_${from}_to_${to}.csv"`);
+    const csv = [headers.map(h => `"${h}"`).join(','), ...csvRows].join('\n');
+    const safeFrom = sanitizeFilenameDate(from);
+    const safeTo = sanitizeFilenameDate(to);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="attendance_${safeFrom}_to_${safeTo}.csv"`);
     res.send(csv);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
@@ -1063,7 +1102,9 @@ app.post('/api/leaves', requireAuth, async (req, res) => {
   if (!user_id || !leave_type_id || !start_date || !end_date) {
     return res.status(400).json({ error: 'user_id, leave_type_id, start_date, end_date are required' });
   }
-  const status = req.user.role === 'admin' ? 'approved' : 'pending';
+  const status = (req.user.role === 'admin' && req.body.status)
+    ? req.body.status
+    : (req.user.role === 'admin' ? 'approved' : 'pending');
   try {
     const [result] = await pool.query(
       `INSERT INTO leaves (user_id, leave_type_id, start_date, end_date, notes, status, submitted_by_self)
@@ -1086,8 +1127,13 @@ app.put('/api/leaves/:id', requireAuth, async (req, res) => {
     if (existing.length === 0) return res.status(404).json({ error: 'Leave record not found' });
     const cur = existing[0];
 
-    if (req.user.role !== 'admin' && cur.status !== 'pending') {
-      return res.status(403).json({ error: 'Cannot edit processed leave request' });
+    if (req.user.role !== 'admin') {
+      if (cur.status !== 'pending') {
+        return res.status(403).json({ error: 'Cannot edit processed leave request' });
+      }
+      if (cur.user_id !== req.user.user_id) {
+        return res.status(403).json({ error: 'You are not authorized to modify this leave record' });
+      }
     }
 
     const newTypeId = leave_type_id !== undefined ? parseInt(leave_type_id, 10) : cur.leave_type_id;
@@ -1102,7 +1148,7 @@ app.put('/api/leaves/:id', requireAuth, async (req, res) => {
     );
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
@@ -1373,7 +1419,7 @@ app.post('/api/admin/reconcile-punches', requireAdmin, async (req, res) => {
 });
 
 // 1. Health & Sync Status
-app.get('/api/status', async (req, res) => {
+app.get('/api/status', requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(
       'SELECT * FROM sync_log ORDER BY id DESC LIMIT 1'
@@ -1391,18 +1437,18 @@ app.get('/api/status', async (req, res) => {
       stats: counts[0] || { employeeCount: 0, departmentCount: 0, punchCount: 0 }
     });
   } catch (err) {
-    res.json({
+    res.status(500).json({
       status: 'db_offline',
       syncInProgress: false,
-      message: 'Database connection failed. Please run ./setup_database.sh to initialize MySQL.',
-      error: err.message,
+      message: 'Database connection failed. Please contact the administrator.',
+      error: sanitizeErrorMessage(err),
       stats: { employeeCount: 0, departmentCount: 0, punchCount: 0 }
     });
   }
 });
 
-// 2. Trigger On-Demand Sync (Biometric Hardware Clocks)
-app.post('/api/sync', async (req, res) => {
+// 2. Trigger On-Demand Sync (Biometric Hardware Clocks - Admin Only)
+app.post('/api/sync', requireAdmin, async (req, res) => {
   if (isSyncInProgress) {
     return res.status(409).json({ error: 'A sync is already in progress' });
   }
@@ -1415,14 +1461,14 @@ app.post('/api/sync', async (req, res) => {
       deviceResult,
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: sanitizeErrorMessage(err) });
   } finally {
     isSyncInProgress = false;
   }
 });
 
 // 3. Departments
-app.get('/api/departments', async (req, res) => {
+app.get('/api/departments', requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(`
       SELECT d.dept_id, d.dept_name, COUNT(e.user_id) AS employee_count
@@ -1433,12 +1479,12 @@ app.get('/api/departments', async (req, res) => {
     `);
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
 // 4. Employees with latest punch status
-app.get('/api/employees', async (req, res) => {
+app.get('/api/employees', requireAuth, async (req, res) => {
   try {
     const search = req.query.search ? `%${req.query.search}%` : null;
     const deptId = req.query.dept_id ? parseInt(req.query.dept_id, 10) : null;
@@ -1495,12 +1541,12 @@ app.get('/api/employees', async (req, res) => {
     const [rows] = await pool.query(query, params);
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
 // 5. Single Employee Details + Attendance
-app.get('/api/employees/:id', async (req, res) => {
+app.get('/api/employees/:id', requireAuth, async (req, res) => {
   try {
     const userId = parseInt(req.params.id, 10);
     const [empRows] = await pool.query(`
@@ -1548,12 +1594,12 @@ app.get('/api/employees/:id', async (req, res) => {
       })),
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
 // 6. Filterable Punch Log (Pagination & Range)
-app.get('/api/punches', async (req, res) => {
+app.get('/api/punches', requireAuth, async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page || '1', 10));
     const limit = Math.min(100, Math.max(10, parseInt(req.query.limit || '50', 10)));
@@ -1613,16 +1659,18 @@ app.get('/api/punches', async (req, res) => {
       ORDER BY c.check_time DESC
       LIMIT ? OFFSET ?
     `;
-    const [rows] = await pool.query(dataSql, [...params, limit, offset]);
+    params.push(limit, offset);
+
+    const [rows] = await pool.query(dataSql, params);
 
     const totalPages = Math.ceil(total / limit);
     res.json({
+      punches: rows,
+      data: rows,
       page,
       limit,
       total,
       totalPages,
-      data: rows,
-      punches: rows,
       pagination: {
         page,
         limit,
@@ -1631,14 +1679,14 @@ app.get('/api/punches', async (req, res) => {
       }
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
 // 7. Dashboard Overview
-app.get('/api/dashboard', async (req, res) => {
+app.get('/api/dashboard', requireAuth, async (req, res) => {
   try {
-    const targetDate = req.query.date || '2026-09-14';
+    const targetDate = req.query.date || getLocalDateString();
     const startOfDay = `${targetDate} 00:00:00`;
     const endOfDay = `${targetDate} 23:59:59`;
 
@@ -1689,12 +1737,12 @@ app.get('/api/dashboard', async (req, res) => {
       deptBreakdown: deptBreakdown || [],
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
 // 8. Daily Attendance Reports (Paired First In / Last Out)
-app.get('/api/reports/daily', async (req, res) => {
+app.get('/api/reports/daily', requireAuth, async (req, res) => {
   try {
     const { from, to, deptId, search } = req.query;
     if (!from || !to) {
@@ -1766,14 +1814,14 @@ app.get('/api/reports/daily', async (req, res) => {
 
     res.json(report);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
 // ─── DEVICE ADMINISTRATION CRUD ──────────────────────────────────────────────
 
 // 9. List all devices (with punch count from checkinout.sn cross-reference)
-app.get('/api/devices', async (req, res) => {
+app.get('/api/devices', requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(`
       SELECT
@@ -1824,10 +1872,18 @@ app.post('/api/devices/import-from-punches', async (req, res) => {
 });
 
 // 10. Create a device
-app.post('/api/devices', async (req, res) => {
+app.post('/api/devices', requireAdmin, async (req, res) => {
   const { sn, alias, ip_address, location, model, status } = req.body;
   if (!sn || !String(sn).trim()) {
     return res.status(400).json({ error: 'Serial number (SN) is required' });
+  }
+  let safeIp = null;
+  if (ip_address && String(ip_address).trim()) {
+    const ipCheck = isSafeDeviceIp(String(ip_address).trim());
+    if (!ipCheck.valid) {
+      return res.status(400).json({ error: ipCheck.error });
+    }
+    safeIp = ipCheck.ip;
   }
   const validStatuses = ['active', 'inactive'];
   const deviceStatus = validStatuses.includes(status) ? status : 'active';
@@ -1838,7 +1894,7 @@ app.post('/api/devices', async (req, res) => {
       [
         String(sn).trim(),
         alias ? String(alias).trim() : null,
-        ip_address ? String(ip_address).trim() : null,
+        safeIp,
         location ? String(location).trim() : null,
         model ? String(model).trim() : null,
         deviceStatus,
@@ -1849,24 +1905,29 @@ app.post('/api/devices', async (req, res) => {
     if (err.code === 'ER_DUP_ENTRY') {
       return res.status(409).json({ error: `A device with SN "${sn}" already exists` });
     }
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
-// 10b. Helper to probe device socket on port 4370
+// 10b. Helper to probe device socket on port 4370 (with SSRF protection)
 function probeDevice(ip, port = 4370, timeoutMs = 1500) {
   return new Promise((resolve) => {
     if (!ip || typeof ip !== 'string' || !ip.trim()) {
       return resolve({ connected: false, latencyMs: 0, error: 'No IP configured' });
     }
-    const cleanIp = ip.trim();
+    const ipCheck = isSafeDeviceIp(ip);
+    if (!ipCheck.valid) {
+      return resolve({ connected: false, latencyMs: 0, error: ipCheck.error });
+    }
+    const cleanIp = ipCheck.ip;
+    const safePort = 4370;
     const start = Date.now();
     const socket = new net.Socket();
     let settled = false;
 
     socket.setTimeout(timeoutMs);
 
-    socket.connect(port, cleanIp, () => {
+    socket.connect(safePort, cleanIp, () => {
       if (settled) return;
       settled = true;
       const latencyMs = Date.now() - start;
@@ -1890,8 +1951,8 @@ function probeDevice(ip, port = 4370, timeoutMs = 1500) {
   });
 }
 
-// 10c. Live network connectivity status for all devices
-app.get('/api/devices/live-status', async (req, res) => {
+// 10c. Live network connectivity status for all devices (Admin only)
+app.get('/api/devices/live-status', requireAdmin, async (req, res) => {
   try {
     const [devices] = await pool.query('SELECT id, sn, alias, ip_address FROM devices');
     const probePromises = devices.map(async (dev) => {
@@ -1921,12 +1982,12 @@ app.get('/api/devices/live-status', async (req, res) => {
     }
     res.json({ success: true, statuses: statusMap });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
-// 10d. Ping/Test connectivity of single device
-app.get('/api/devices/:id/ping', async (req, res) => {
+// 10d. Ping/Test connectivity of single device (Admin only)
+app.get('/api/devices/:id/ping', requireAdmin, async (req, res) => {
   try {
     const [rows] = await pool.query('SELECT id, sn, alias, ip_address FROM devices WHERE id = ?', [parseInt(req.params.id, 10)]);
     if (rows.length === 0) return res.status(404).json({ error: 'Device not found' });
@@ -1942,12 +2003,12 @@ app.get('/api/devices/:id/ping', async (req, res) => {
       ...result
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
-// 10e. Direct network sync for a single device (port 4370)
-app.post('/api/devices/:id/sync', async (req, res) => {
+// 10e. Direct network sync for a single device (Admin only)
+app.post('/api/devices/:id/sync', requireAdmin, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const [rows] = await pool.query('SELECT * FROM devices WHERE id = ?', [id]);
@@ -1959,37 +2020,45 @@ app.post('/api/devices/:id/sync', async (req, res) => {
     const result = await syncSingleDevice(dev, pool);
     res.json({ success: true, result });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: sanitizeErrorMessage(err) });
   }
 });
 
-// 10f. Direct network sync for all active devices
-app.post('/api/devices/sync-all', async (req, res) => {
+// 10f. Direct network sync for all active devices (Admin only)
+app.post('/api/devices/sync-all', requireAdmin, async (req, res) => {
   try {
     const result = await syncAllActiveDevices(pool);
     res.json({ success: true, result });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: sanitizeErrorMessage(err) });
   }
 });
 
 // 11. Get single device
-app.get('/api/devices/:id', async (req, res) => {
+app.get('/api/devices/:id', requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query('SELECT * FROM devices WHERE id = ?', [parseInt(req.params.id, 10)]);
     if (rows.length === 0) return res.status(404).json({ error: 'Device not found' });
     res.json(rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
 // 12. Update a device
-app.put('/api/devices/:id', async (req, res) => {
+app.put('/api/devices/:id', requireAdmin, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const { sn, alias, ip_address, location, model, status } = req.body;
   if (!sn || !String(sn).trim()) {
     return res.status(400).json({ error: 'Serial number (SN) is required' });
+  }
+  let safeIp = null;
+  if (ip_address && String(ip_address).trim()) {
+    const ipCheck = isSafeDeviceIp(String(ip_address).trim());
+    if (!ipCheck.valid) {
+      return res.status(400).json({ error: ipCheck.error });
+    }
+    safeIp = ipCheck.ip;
   }
   const validStatuses = ['active', 'inactive'];
   const deviceStatus = validStatuses.includes(status) ? status : 'active';
@@ -1999,7 +2068,7 @@ app.put('/api/devices/:id', async (req, res) => {
       [
         String(sn).trim(),
         alias ? String(alias).trim() : null,
-        ip_address ? String(ip_address).trim() : null,
+        safeIp,
         location ? String(location).trim() : null,
         model ? String(model).trim() : null,
         deviceStatus,
@@ -2012,25 +2081,25 @@ app.put('/api/devices/:id', async (req, res) => {
     if (err.code === 'ER_DUP_ENTRY') {
       return res.status(409).json({ error: `A device with SN "${sn}" already exists` });
     }
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
 // 13. Delete a device
-app.delete('/api/devices/:id', async (req, res) => {
+app.delete('/api/devices/:id', requireAdmin, async (req, res) => {
   try {
     const [result] = await pool.query('DELETE FROM devices WHERE id = ?', [parseInt(req.params.id, 10)]);
     if (result.affectedRows === 0) return res.status(404).json({ error: 'Device not found' });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
-// ─── USER ADMINISTRATION CRUD ─────────────────────────────────────────────────
+// ─── USER ADMINISTRATION CRUD (Admin Only) ───────────────────────────────────
 
 // 14. Admin user list (employees with total punch count)
-app.get('/api/admin/users', async (req, res) => {
+app.get('/api/admin/users', requireAdmin, async (req, res) => {
   try {
     const search = req.query.search ? `%${req.query.search}%` : null;
     const deptId = req.query.dept_id ? parseInt(req.query.dept_id, 10) : null;
@@ -2069,12 +2138,12 @@ app.get('/api/admin/users', async (req, res) => {
     const [rows] = await pool.query(query, params);
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
 // 15. Create a user/employee
-app.post('/api/employees', async (req, res) => {
+app.post('/api/employees', requireAdmin, async (req, res) => {
   const { user_id, badge_number, name, gender, dept_id } = req.body;
   if (!user_id || !name || !String(name).trim()) {
     return res.status(400).json({ error: 'User ID and full name are required' });
@@ -2111,12 +2180,12 @@ app.post('/api/employees', async (req, res) => {
     if (err.code === 'ER_DUP_ENTRY') {
       return res.status(409).json({ error: `A user with ID ${user_id} already exists` });
     }
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
 // 16. Update a user/employee
-app.put('/api/employees/:id', async (req, res) => {
+app.put('/api/employees/:id', requireAdmin, async (req, res) => {
   const userId = parseInt(req.params.id, 10);
   const { badge_number, name, gender, dept_id, schedule_id } = req.body;
   if (!name || !String(name).trim()) {
@@ -2148,19 +2217,19 @@ app.put('/api/employees/:id', async (req, res) => {
 
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 
 // 17. Delete a user/employee (cascades to checkinout via FK)
-app.delete('/api/employees/:id', async (req, res) => {
+app.delete('/api/employees/:id', requireAdmin, async (req, res) => {
   try {
     await pool.query('DELETE FROM USER_OF_RUN WHERE USERID = ?', [parseInt(req.params.id, 10)]);
     const [result] = await pool.query('DELETE FROM employees WHERE user_id = ?', [parseInt(req.params.id, 10)]);
     if (result.affectedRows === 0) return res.status(404).json({ error: 'User not found' });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeErrorMessage(err) });
   }
 });
 

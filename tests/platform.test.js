@@ -1,6 +1,7 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('crypto');
+const { getLocalDateString } = require('../bridge/helpers');
 process.env.NODE_ENV = 'test';
 const app = require('../server/server');
 
@@ -135,6 +136,36 @@ test('Live Attendance Board: should return live status and employee records', as
   assert.ok('name' in firstEmp);
   assert.ok('status' in firstEmp);
   assert.ok(['in', 'out', 'absent'].includes(firstEmp.status));
+});
+
+test('Live Attendance Board: defaults to actual current date and includes server timestamp when date omitted', async () => {
+  const res = await fetch(`${BASE_URL}/api/attendance/live`, {
+    headers: { 'x-auth-token': adminToken }
+  });
+
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  const expectedDate = getLocalDateString();
+  assert.equal(data.date, expectedDate, `Must default to today's local date ${expectedDate} instead of obsolete hardcoded date`);
+  assert.ok(data.server_time, 'Must include server_time timestamp');
+  assert.ok(data.timestamp, 'Must include timestamp');
+  assert.ok(!isNaN(new Date(data.server_time).getTime()), 'server_time must be a valid ISO string');
+  assert.ok(data.summary);
+  assert.ok(Array.isArray(data.employees));
+});
+
+test('Dashboard Overview: defaults to actual current date when date omitted', async () => {
+  const res = await fetch(`${BASE_URL}/api/dashboard`, {
+    headers: { 'x-auth-token': adminToken }
+  });
+
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.equal(data.date, getLocalDateString());
+  assert.ok(data.stats);
+  assert.equal(typeof data.stats.totalEmployees, 'number');
+  assert.equal(typeof data.stats.activeToday, 'number');
+  assert.equal(typeof data.stats.punchesToday, 'number');
 });
 
 test('Smart Reports: Attendance Summary report', async () => {
@@ -302,7 +333,7 @@ test('Shifts & Schedules API: comprehensive CRUD, rotation, and assignment workf
   const testUserId = 999456;
   await fetch(`${BASE_URL}/api/employees`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'x-auth-token': adminToken },
     body: JSON.stringify({
       user_id: testUserId,
       badge_number: 'SCH-999',
@@ -322,7 +353,9 @@ test('Shifts & Schedules API: comprehensive CRUD, rotation, and assignment workf
   assert.equal(assignRes.status, 200);
 
   // 9. Verify employee schedule assignment in GET /api/employees/:id and roster
-  const empRes = await fetch(`${BASE_URL}/api/employees/${testUserId}`);
+  const empRes = await fetch(`${BASE_URL}/api/employees/${testUserId}`, {
+    headers: { 'x-auth-token': adminToken }
+  });
   assert.equal(empRes.status, 200);
   const emp = await empRes.json();
   assert.equal(emp.schedule_id, newSchedId);
@@ -365,7 +398,10 @@ test('Shifts & Schedules API: comprehensive CRUD, rotation, and assignment workf
   assert.equal(delShiftRes.status, 200);
 
   // Clean up employee
-  await fetch(`${BASE_URL}/api/employees/${testUserId}`, { method: 'DELETE' });
+  await fetch(`${BASE_URL}/api/employees/${testUserId}`, {
+    method: 'DELETE',
+    headers: { 'x-auth-token': adminToken }
+  });
 });
 
 test('Leave Management API: create, read, update, delete workflow', async () => {
@@ -537,7 +573,7 @@ test('Clock Devices API: CRUD workflow', async () => {
   // 1. Create Device
   const createRes = await fetch(`${BASE_URL}/api/devices`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'x-auth-token': adminToken },
     body: JSON.stringify({
       sn: testSn,
       alias: 'Test Entrance Clock',
@@ -553,7 +589,9 @@ test('Clock Devices API: CRUD workflow', async () => {
   const deviceId = createData.id;
 
   // 2. Fetch Device
-  const getRes = await fetch(`${BASE_URL}/api/devices/${deviceId}`);
+  const getRes = await fetch(`${BASE_URL}/api/devices/${deviceId}`, {
+    headers: { 'x-auth-token': adminToken }
+  });
   assert.equal(getRes.status, 200);
   const deviceData = await getRes.json();
   assert.equal(deviceData.sn, testSn);
@@ -562,7 +600,7 @@ test('Clock Devices API: CRUD workflow', async () => {
   // 3. Update Device
   const updateRes = await fetch(`${BASE_URL}/api/devices/${deviceId}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'x-auth-token': adminToken },
     body: JSON.stringify({
       sn: testSn,
       alias: 'Updated Test Clock',
@@ -576,7 +614,8 @@ test('Clock Devices API: CRUD workflow', async () => {
 
   // 4. Delete Device
   const delRes = await fetch(`${BASE_URL}/api/devices/${deviceId}`, {
-    method: 'DELETE'
+    method: 'DELETE',
+    headers: { 'x-auth-token': adminToken }
   });
   assert.equal(delRes.status, 200);
 });
@@ -626,7 +665,9 @@ test('Frontend DOM & Controller Integrity: Schedule & Shift Management Modals an
 
 test('Clock Devices Live Connectivity API: single ping and bulk live-status workflow', async () => {
   // 1. Bulk live-status endpoint
-  const bulkRes = await fetch(`${BASE_URL}/api/devices/live-status`);
+  const bulkRes = await fetch(`${BASE_URL}/api/devices/live-status`, {
+    headers: { 'x-auth-token': adminToken }
+  });
   assert.equal(bulkRes.status, 200);
   const bulkData = await bulkRes.json();
   assert.equal(bulkData.success, true);
@@ -641,7 +682,9 @@ test('Clock Devices Live Connectivity API: single ping and bulk live-status work
   }
 
   // 2. Single ping endpoint for device 3
-  const pingRes = await fetch(`${BASE_URL}/api/devices/3/ping`);
+  const pingRes = await fetch(`${BASE_URL}/api/devices/3/ping`, {
+    headers: { 'x-auth-token': adminToken }
+  });
   assert.equal(pingRes.status, 200);
   const pingData = await pingRes.json();
   assert.equal(pingData.id, 3);
@@ -649,7 +692,9 @@ test('Clock Devices Live Connectivity API: single ping and bulk live-status work
   assert.equal(typeof pingData.latencyMs, 'number');
 
   // 3. Ping non-existent device returns 404
-  const notFoundRes = await fetch(`${BASE_URL}/api/devices/999999/ping`);
+  const notFoundRes = await fetch(`${BASE_URL}/api/devices/999999/ping`, {
+    headers: { 'x-auth-token': adminToken }
+  });
   assert.equal(notFoundRes.status, 404);
 });
 
@@ -697,7 +742,10 @@ test('Decommission of Legacy Access Sync: Verification of server, frontend, and 
 });
 
 test('Direct Biometric Clock On-Demand Sync API: POST /api/sync execution & structure', async () => {
-  const syncRes = await fetch(`${BASE_URL}/api/sync`, { method: 'POST' });
+  const syncRes = await fetch(`${BASE_URL}/api/sync`, {
+    method: 'POST',
+    headers: { 'x-auth-token': adminToken }
+  });
   assert.equal(syncRes.status, 200, 'POST /api/sync should return 200 OK');
   const syncData = await syncRes.json();
 
@@ -768,7 +816,9 @@ test('Mutation Testing: Device sync status evaluation and error resilience', () 
 
 test('Employee Profile Modal API: GET /api/employees/:id returns complete summary & punches', async () => {
   // Test with employee 125 (Malcolm)
-  const res = await fetch(`${BASE_URL}/api/employees/125`);
+  const res = await fetch(`${BASE_URL}/api/employees/125`, {
+    headers: { 'x-auth-token': adminToken }
+  });
   assert.equal(res.status, 200, 'Employee 125 must return 200 OK');
   const data = await res.json();
 
@@ -787,7 +837,9 @@ test('Employee Profile Modal API: GET /api/employees/:id returns complete summar
   }
 
   // Non-existent employee returns 404
-  const notFoundRes = await fetch(`${BASE_URL}/api/employees/999999`);
+  const notFoundRes = await fetch(`${BASE_URL}/api/employees/999999`, {
+    headers: { 'x-auth-token': adminToken }
+  });
   assert.equal(notFoundRes.status, 404, 'Non-existent employee must return 404');
 });
 

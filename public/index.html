@@ -298,6 +298,7 @@
               <div class="form-group-inline">
                 <label for="live-date-input">Target Date:</label>
                 <input type="date" id="live-date-input" class="filter-input">
+                <button type="button" id="btn-live-today" class="btn-live-today" title="Jump to actual current date">Today</button>
               </div>
               <div class="form-group-inline">
                 <label for="live-dept-filter">Department:</label>
@@ -318,6 +319,9 @@
               <div class="live-status-badge">
                 <span class="live-dot-pulse"></span>
                 <span id="live-timer-label">Auto 60s</span>
+              </div>
+              <div class="live-last-updated" id="live-last-updated" title="Actual date and time when live attendance data was refreshed">
+                Updated: --:--:--
               </div>
             </div>
           </div>

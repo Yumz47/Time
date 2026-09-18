@@ -696,6 +696,60 @@ function deserializeSchedulePayload(jsonStr) {
   return parsed;
 }
 
+/**
+ * Returns the local date string formatted as YYYY-MM-DD for a given Date object or ISO string.
+ * Uses local calendar date components to prevent UTC timezone date-shift discrepancies.
+ * @param {Date|string|number} [dateInput=new Date()]
+ * @returns {string} Date string in YYYY-MM-DD format
+ */
+function getLocalDateString(dateInput = new Date()) {
+  const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+  if (isNaN(d.getTime())) {
+    throw new TypeError('Invalid date input provided to getLocalDateString');
+  }
+  const pad = (n) => String(n).padStart(2, '0');
+  const year = d.getFullYear();
+  const month = pad(d.getMonth() + 1);
+  const day = pad(d.getDate());
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Serializes live board state and payload into a validated JSON string
+ * @param {Object} payload
+ * @returns {string} JSON payload
+ */
+function serializeLiveBoardPayload(payload) {
+  if (!payload || typeof payload !== 'object') {
+    throw new TypeError('Live board payload must be a non-null object');
+  }
+  return JSON.stringify({
+    date: payload.date || getLocalDateString(),
+    refreshedAt: payload.refreshedAt || new Date().toISOString(),
+    summary: payload.summary || { total: 0, present: 0, absent: 0, currently_in: 0, currently_out: 0 },
+    employees: Array.isArray(payload.employees) ? payload.employees : []
+  });
+}
+
+/**
+ * Deserializes and validates a live board payload JSON string
+ * @param {string} jsonStr
+ * @returns {Object} Deserialized payload
+ */
+function deserializeLiveBoardPayload(jsonStr) {
+  if (typeof jsonStr !== 'string') {
+    throw new TypeError('Input must be a JSON string');
+  }
+  const parsed = JSON.parse(jsonStr);
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Deserialized payload must be an object');
+  }
+  if (!parsed.date || typeof parsed.date !== 'string') {
+    parsed.date = getLocalDateString();
+  }
+  return parsed;
+}
+
 module.exports = {
   normalizeCheckType,
   formatMySQLDateTime,
@@ -714,7 +768,11 @@ module.exports = {
   validateShiftData,
   validateScheduleData,
   serializeSchedulePayload,
-  deserializeSchedulePayload
+  deserializeSchedulePayload,
+  getLocalDateString,
+  serializeLiveBoardPayload,
+  deserializeLiveBoardPayload
 };
+
 
 

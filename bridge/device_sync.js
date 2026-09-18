@@ -26,6 +26,7 @@ const mysql = require('mysql2/promise');
 const net = require('net');
 const path = require('path');
 const { resolveNormalizedType, isSameDay } = require('./helpers');
+const { isSafeDeviceIp } = require('../server/security');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 /**
@@ -37,6 +38,11 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
  */
 function probeSocket(ip, port = 4370, timeoutMs = 1500) {
   return new Promise((resolve) => {
+    const ipCheck = isSafeDeviceIp(ip);
+    if (!ipCheck.valid) {
+      return resolve(false);
+    }
+    const cleanIp = ipCheck.ip;
     const socket = new net.Socket();
     let isSettled = false;
     socket.setTimeout(timeoutMs);
@@ -59,7 +65,7 @@ function probeSocket(ip, port = 4370, timeoutMs = 1500) {
         resolve(false);
       }
     });
-    socket.connect(port, ip);
+    socket.connect(4370, cleanIp);
   });
 }
 
@@ -160,10 +166,14 @@ async function syncSingleDevice(device, pool, options = {}) {
   if (!device || !device.ip_address) {
     throw new Error('Device record must contain a valid ip_address');
   }
+  const ipCheck = isSafeDeviceIp(device.ip_address);
+  if (!ipCheck.valid) {
+    throw new Error(`Device IP security validation failed: ${ipCheck.error}`);
+  }
 
   const startTime = Date.now();
-  const ip = String(device.ip_address).trim();
-  const port = options.port || 4370;
+  const ip = ipCheck.ip;
+  const port = 4370;
 
   // 1. Fast socket probe before protocol handshake
   const probeMs = options.probeTimeoutMs || 1500;

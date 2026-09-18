@@ -497,16 +497,26 @@ document.addEventListener('DOMContentLoaded', () => {
   const liveTimerLabel = document.getElementById('live-timer-label');
   const filterPills = document.querySelectorAll('.filter-pill');
 
-  // Initialize date picker to today or latest known active date (2026-09-14)
-  if (liveDateInput && !liveDateInput.value) {
-    const todayStr = new Date().toISOString().split('T')[0];
-    liveDateInput.value = todayStr > '2026-09-14' ? '2026-09-14' : todayStr;
+  // Utility: get local date string YYYY-MM-DD
+  function getLocalDateString(dateInput = new Date()) {
+    const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+    if (isNaN(d.getTime())) return '';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   }
 
-  async function loadLiveBoard() {
+  // Initialize date picker to actual current local date
+  if (liveDateInput && !liveDateInput.value) {
+    liveDateInput.value = getLocalDateString();
+  }
+
+  async function loadLiveBoard(forceToday = false) {
     if (!liveBoardGrid) return;
-    const date = liveDateInput.value || '2026-09-14';
-    const deptId = liveDeptFilter.value;
+    if (forceToday && liveDateInput) {
+      liveDateInput.value = getLocalDateString();
+    }
+    const date = (liveDateInput && liveDateInput.value) ? liveDateInput.value : getLocalDateString();
+    const deptId = liveDeptFilter ? liveDeptFilter.value : '';
 
     liveBoardGrid.innerHTML = '<div class="grid-loading" style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-muted);">Fetching live board data...</div>';
 
@@ -531,6 +541,20 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('count-in').textContent = data.summary.currently_in;
         document.getElementById('count-out').textContent = data.summary.currently_out;
         document.getElementById('count-absent').textContent = data.summary.absent;
+      }
+
+      // Update Live Board Last Refreshed Date & Time indicator
+      const liveLastUpdated = document.getElementById('live-last-updated');
+      if (liveLastUpdated) {
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString([], { hour12: false });
+        const todayStr = getLocalDateString(now);
+        if (date === todayStr) {
+          liveLastUpdated.textContent = `Live: Today ${timeStr}`;
+        } else {
+          liveLastUpdated.textContent = `Updated: ${date} ${timeStr}`;
+        }
+        liveLastUpdated.title = `Live data refreshed at ${todayStr} ${timeStr}`;
       }
 
       renderLiveBoard();
@@ -613,14 +637,26 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  liveDateInput?.addEventListener('change', loadLiveBoard);
-  liveDeptFilter?.addEventListener('change', loadLiveBoard);
+  const btnLiveToday = document.getElementById('btn-live-today');
+  btnLiveToday?.addEventListener('click', () => {
+    if (liveDateInput) liveDateInput.value = getLocalDateString();
+    loadLiveBoard();
+    const now = new Date();
+    showToast(`Live board reset to today (${getLocalDateString(now)})`, 'info');
+  });
+
+  liveDateInput?.addEventListener('change', () => loadLiveBoard());
+  liveDeptFilter?.addEventListener('change', () => loadLiveBoard());
   liveSearchInput?.addEventListener('input', () => {
     renderLiveBoard();
   });
   btnRefreshLive?.addEventListener('click', () => {
+    if (liveDateInput && !liveDateInput.value) {
+      liveDateInput.value = getLocalDateString();
+    }
     loadLiveBoard();
-    showToast('Live board refreshed', 'info');
+    const now = new Date();
+    showToast(`Live board refreshed at ${now.toLocaleTimeString([], { hour12: false })}`, 'info');
   });
 
   function resetLiveCountdown() {
@@ -1234,7 +1270,11 @@ document.addEventListener('DOMContentLoaded', () => {
       rowsToExport.forEach(r => {
         const row = visibleDefs.map(d => {
           const val = d.getValue(r, thVal, from);
-          return `"${String(val ?? '').replace(/"/g, '""')}"`;
+          let strVal = String(val ?? '');
+          if (strVal.length > 0 && ['=', '+', '-', '@', '\t', '\r'].includes(strVal.charAt(0))) {
+            strVal = `'${strVal}`;
+          }
+          return `"${strVal.replace(/"/g, '""')}"`;
         });
         csvRows.push(row.join(','));
       });

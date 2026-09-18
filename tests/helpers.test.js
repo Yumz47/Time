@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
 const {
   normalizeCheckType,
   formatMySQLDateTime,
@@ -13,6 +15,9 @@ const {
   inferNormalizedType,
   classifyByShiftWindow,
   resolveNormalizedType,
+  getLocalDateString,
+  serializeLiveBoardPayload,
+  deserializeLiveBoardPayload,
 } = require('../bridge/helpers');
 
 test('normalizeCheckType should accurately categorize In and Out punches', () => {
@@ -608,4 +613,109 @@ test('Mutation test: reverting debounce to 60s would erroneously toggle User 111
   assert.equal(mutantResult, 'out', 'Mutant 60s debounce would erroneously toggle to OUT');
   assert.notEqual(correctResult, mutantResult, '5-minute debounce must prevent the mutant 60s toggle');
 });
+
+// ─── LIVE BOARD DATE & TIME TEST SUITE ──────────────────────────────────────────
+
+test('Unit Tests: getLocalDateString produces accurate YYYY-MM-DD in local time', () => {
+  // Test with explicit date components
+  const d1 = new Date(2026, 8, 17, 16, 30, 0); // Sept 17, 2026
+  assert.equal(getLocalDateString(d1), '2026-09-17');
+
+  // Test single-digit month and day padding
+  const d2 = new Date(2026, 0, 5, 9, 5, 0); // Jan 5, 2026
+  assert.equal(getLocalDateString(d2), '2026-01-05');
+
+  // Test leap year day
+  const d3 = new Date(2024, 1, 29, 12, 0, 0); // Feb 29, 2024
+  assert.equal(getLocalDateString(d3), '2024-02-29');
+
+  // Test year rollover
+  const d4 = new Date(2026, 11, 31, 23, 59, 59); // Dec 31, 2026
+  assert.equal(getLocalDateString(d4), '2026-12-31');
+
+  // Test default parameter (current date)
+  const todayStr = getLocalDateString();
+  assert.match(todayStr, /^\d{4}-\d{2}-\d{2}$/);
+
+  // Invalid date inputs must throw TypeError
+  assert.throws(() => getLocalDateString('invalid-date-string'), TypeError);
+  assert.throws(() => getLocalDateString(new Date('invalid')), TypeError);
+});
+
+test('Pickle Tests: serializeLiveBoardPayload and deserializeLiveBoardPayload roundtrip integrity', () => {
+  const livePayload = {
+    date: '2026-09-17',
+    refreshedAt: '2026-09-17T22:30:00.000Z',
+    summary: {
+      total: 25,
+      present: 20,
+      absent: 5,
+      currently_in: 18,
+      currently_out: 2
+    },
+    employees: [
+      { user_id: 111, name: 'Alice', status: 'in', last_punch_time: '2026-09-17 08:12:00' },
+      { user_id: 222, name: 'Bob', status: 'out', last_punch_time: '2026-09-17 17:00:00' }
+    ]
+  };
+
+  const serialized = serializeLiveBoardPayload(livePayload);
+  assert.equal(typeof serialized, 'string');
+
+  const deserialized = deserializeLiveBoardPayload(serialized);
+  assert.equal(deserialized.date, '2026-09-17');
+  assert.equal(deserialized.refreshedAt, '2026-09-17T22:30:00.000Z');
+  assert.equal(deserialized.summary.total, 25);
+  assert.equal(deserialized.summary.currently_in, 18);
+  assert.equal(deserialized.employees.length, 2);
+  assert.equal(deserialized.employees[0].name, 'Alice');
+
+  // Deserialization with missing date defaults to current local date
+  const partialSerialized = JSON.stringify({ summary: { total: 10 }, employees: [] });
+  const restored = deserializeLiveBoardPayload(partialSerialized);
+  assert.match(restored.date, /^\d{4}-\d{2}-\d{2}$/);
+
+  // Type errors on invalid inputs
+  assert.throws(() => serializeLiveBoardPayload(null), TypeError);
+  assert.throws(() => serializeLiveBoardPayload('not-an-object'), TypeError);
+  assert.throws(() => deserializeLiveBoardPayload(12345), TypeError);
+});
+
+test('Quality Control (QA): Live Attendance Board DOM elements and active source inspection', () => {
+  const htmlPath = path.resolve(__dirname, '../public/index.html');
+  const appJsPath = path.resolve(__dirname, '../public/app.js');
+  const serverJsPath = path.resolve(__dirname, '../server/server.js');
+
+  const htmlContent = fs.readFileSync(htmlPath, 'utf8');
+  const appJsContent = fs.readFileSync(appJsPath, 'utf8');
+  const serverJsContent = fs.readFileSync(serverJsPath, 'utf8');
+
+  // Verify UI controls in index.html
+  assert.ok(htmlContent.includes('id="btn-live-today"'), 'index.html must include Today quick jump button #btn-live-today');
+  assert.ok(htmlContent.includes('id="live-last-updated"'), 'index.html must include Last Updated timestamp display #live-last-updated');
+  assert.ok(htmlContent.includes('id="live-date-input"'), 'index.html must include Target Date picker #live-date-input');
+
+  // Verify zero hardcoded 2026-09-14 default fallbacks in app.js and server.js
+  assert.ok(!appJsContent.includes("'2026-09-14'"), 'public/app.js must not contain hardcoded 2026-09-14 date fallback');
+  assert.ok(!serverJsContent.includes("'2026-09-14'"), 'server/server.js must not contain hardcoded 2026-09-14 date fallback');
+});
+
+test('Mutation Testing: Mutant date formatting and UTC day-boundary shift prevention', () => {
+  const localDate = new Date(2026, 8, 17, 23, 45, 0); // 11:45 PM local time
+  const correct = getLocalDateString(localDate);
+
+  // Mutant 1: Using unpadded month/day (e.g. 2026-9-17)
+  const mutantUnpadded = `${localDate.getFullYear()}-${localDate.getMonth() + 1}-${localDate.getDate()}`;
+  if (localDate.getMonth() < 9 || localDate.getDate() < 10) {
+    assert.notEqual(correct, mutantUnpadded, 'Mutant unpadded string must be rejected');
+  }
+
+  // Mutant 2: Hardcoded fallback date simulation
+  const mutantFallback = '2026-09-14';
+  assert.notEqual(correct, mutantFallback, 'Live board must not fall back to obsolete 2026-09-14');
+
+  // Mutant 3: Deserializer must reject malformed JSON
+  assert.throws(() => deserializeLiveBoardPayload('{ malformed json '), SyntaxError);
+});
+
 

@@ -1723,22 +1723,29 @@ body.light-theme input:-webkit-autofill:active {
   font-size: 0.85rem;
   margin-bottom: 16px;
 }
-/* ─── 2. USER SESSION BADGE IN SIDEBAR ───────────────────────────────────────── */
+/* ─── 2. USER SESSION BADGE IN TOPBAR (UPPER RIGHT CORNER) ───────────────────── */
 .user-session-card {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  background: rgba(255, 255, 255, 0.04);
+  gap: 10px;
+  padding: 4px 10px 4px 6px;
+  background: var(--input-bg);
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  margin-bottom: 8px;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
   flex-shrink: 0;
+  margin-bottom: 0;
+  transition: var(--transition-smooth);
+}
+
+.user-session-card:hover {
+  border-color: rgba(0, 210, 255, 0.35);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
 }
 
 .user-session-avatar {
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
   color: #fff;
@@ -1748,20 +1755,23 @@ body.light-theme input:-webkit-autofill:active {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
 }
 
 .user-session-details {
   display: flex;
   flex-direction: column;
+  justify-content: center;
+  line-height: 1.15;
   overflow: hidden;
-  flex: 1;
-  min-width: 0;
 }
 
 .user-session-name {
   font-size: 0.82rem;
   font-weight: 600;
+  color: var(--text-primary);
   white-space: nowrap;
+  max-width: 130px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -1783,17 +1793,25 @@ body.role-viewer .user-session-role {
   border: none;
   color: var(--text-muted);
   cursor: pointer;
-  padding: 6px;
+  padding: 5px;
+  width: 26px;
+  height: 26px;
   border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
   justify-content: center;
   transition: var(--transition-smooth);
+  margin-left: 2px;
 }
 
 .btn-logout:hover {
   background: rgba(244, 63, 94, 0.15);
   color: var(--accent-rose);
+  transform: scale(1.05);
+}
+
+.btn-logout:active {
+  transform: scale(0.95);
 }
 
 /* ─── 3. LIVE BOARD ──────────────────────────────────────────────────────────── */

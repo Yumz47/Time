@@ -4,6 +4,9 @@ const {
   formatLocalMySQLDateTime,
   normalizeDeviceUser,
   normalizeDeviceAttendance,
+  encodeZKTime,
+  decodeZKTime,
+  syncDeviceTimeIfDrifted,
 } = require('../bridge/device_sync');
 const { serializeRecords, deserializeRecords } = require('../bridge/helpers');
 
@@ -241,5 +244,114 @@ test('Mutation test: omitting inOutStatus fallback must trigger assertion failur
   const mutant = { ...punchWithOut, inOutStatus: undefined };
   assert.notEqual(mutant.inOutStatus, 1, 'Mutant must differ from valid punch with inOutStatus');
 });
+
+test('Unit Test: encodeZKTime and decodeZKTime accurate 4-byte LE roundtrip', () => {
+  const dates = [
+    new Date(2026, 8, 22, 8, 20, 45), // 2026-09-22 08:20:45
+    new Date(2025, 0, 1, 0, 0, 0),    // 2025-01-01 00:00:00
+    new Date(2030, 11, 31, 23, 59, 59),// 2030-12-31 23:59:59
+    new Date(2024, 1, 29, 12, 30, 15)  // 2024-02-29 12:30:15 (leap year)
+  ];
+
+  for (const orig of dates) {
+    const buf = encodeZKTime(orig);
+    assert.equal(buf.length, 4, 'Encoded buffer must be 4 bytes');
+    const integerVal = buf.readUInt32LE(0);
+    const decoded = decodeZKTime(integerVal);
+
+    assert.equal(decoded.getFullYear(), orig.getFullYear());
+    assert.equal(decoded.getMonth(), orig.getMonth());
+    assert.equal(decoded.getDate(), orig.getDate());
+    assert.equal(decoded.getHours(), orig.getHours());
+    assert.equal(decoded.getMinutes(), orig.getMinutes());
+    assert.equal(decoded.getSeconds(), orig.getSeconds());
+  }
+});
+
+test('Pickle & serialization test: encodeZKTime binary payload integrity', () => {
+  const d = new Date(2026, 8, 22, 8, 30, 0);
+  const buf = encodeZKTime(d);
+  const hex = buf.toString('hex');
+  const restoredBuf = Buffer.from(hex, 'hex');
+  const restoredDate = decodeZKTime(restoredBuf.readUInt32LE(0));
+
+  assert.equal(restoredDate.toISOString(), d.toISOString());
+});
+
+test('Unit Test: syncDeviceTimeIfDrifted correctly detects drift and updates clock', async () => {
+  let executedCmds = [];
+  const fakeDeviceTime = new Date(Date.now() + 600 * 1000); // 10 minutes in the future
+  const fakeTcp = {
+    socket: true,
+    async disableDevice() { executedCmds.push('disable'); },
+    async enableDevice() { executedCmds.push('enable'); },
+    async executeCmd(cmd, payload) {
+      executedCmds.push({ cmd, payload });
+      if (cmd === 201) {
+        // Return 8 byte header + 4 byte timestamp
+        const res = Buffer.alloc(12);
+        const encoded = encodeZKTime(fakeDeviceTime);
+        encoded.copy(res, 8);
+        return res;
+      }
+      return Buffer.alloc(8);
+    }
+  };
+
+  const fakeZk = { zklibTcp: fakeTcp };
+  const res = await syncDeviceTimeIfDrifted(fakeZk, 'TestClock', 5);
+
+  assert.equal(res.synced, true);
+  assert.ok(res.driftSec >= 595 && res.driftSec <= 605);
+  // Verify commands: disable -> cmd 202 (set time) -> cmd 1013 (refresh) -> enable
+  assert.ok(executedCmds.includes('disable'));
+  assert.ok(executedCmds.includes('enable'));
+  assert.ok(executedCmds.some(c => c.cmd === 202));
+  assert.ok(executedCmds.some(c => c.cmd === 1013));
+});
+
+test('Unit Test: syncDeviceTimeIfDrifted skips update if drift within tolerance', async () => {
+  let executedCmds = [];
+  const closeDeviceTime = new Date(Date.now() + 2000); // 2 seconds ahead
+  const fakeTcp = {
+    socket: true,
+    async executeCmd(cmd) {
+      if (cmd === 201) {
+        const res = Buffer.alloc(12);
+        encodeZKTime(closeDeviceTime).copy(res, 8);
+        return res;
+      }
+      executedCmds.push(cmd);
+      return Buffer.alloc(8);
+    }
+  };
+
+  const res = await syncDeviceTimeIfDrifted({ zklibTcp: fakeTcp }, 'AccurateClock', 5);
+  assert.equal(res.synced, false);
+  assert.equal(executedCmds.length, 0, 'No set time or refresh commands should be executed');
+});
+
+test('Mutation test: mutating drift threshold or reversal must be caught', async () => {
+  const fakeTcp = {
+    socket: true,
+    async executeCmd(cmd) {
+      if (cmd === 201) {
+        const res = Buffer.alloc(12);
+        encodeZKTime(new Date(Date.now() + 3000)).copy(res, 8); // 3s drift
+        return res;
+      }
+      return Buffer.alloc(8);
+    }
+  };
+
+  // With threshold 5: should not sync
+  const resNormal = await syncDeviceTimeIfDrifted({ zklibTcp: fakeTcp }, 'Clock', 5);
+  assert.equal(resNormal.synced, false);
+
+  // If threshold is mutated to 1: must trigger sync
+  const resMutatedThreshold = await syncDeviceTimeIfDrifted({ zklibTcp: fakeTcp }, 'Clock', 1);
+  assert.equal(resMutatedThreshold.synced, true);
+});
+
 
 

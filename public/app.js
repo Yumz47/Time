@@ -3114,6 +3114,9 @@ document.addEventListener('DOMContentLoaded', () => {
             <button class="btn-icon sync-device" data-id="${d.id}" data-alias="${escapeHtml(d.alias || d.sn)}" title="Direct Sync users & punches (port 4370)">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21.5 2v6h-6"/><path d="M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
             </button>
+            <button class="btn-icon sync-clock-time" data-id="${d.id}" data-alias="${escapeHtml(d.alias || d.sn)}" title="Sync hardware RTC clock to server time">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            </button>
             <button class="btn-icon ping" data-id="${d.id}" data-alias="${escapeHtml(d.alias || d.sn)}" title="Test connection (port 4370)">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
             </button>
@@ -3161,6 +3164,26 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       });
     });
+
+    devicesTbody.querySelectorAll('.btn-icon.sync-clock-time').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.classList.add('spinning');
+        const id = parseInt(btn.dataset.id, 10);
+        const alias = btn.dataset.alias;
+        showToast(`Aligning hardware clock on "${alias}" to server time...`, 'info');
+        try {
+          const res = await apiFetch(`/api/devices/${id}/sync-time`, { method: 'POST' });
+          const data = await res.json();
+          if (!data.success) throw new Error(data.error || 'Failed to sync clock time');
+          showToast(`Hardware RTC clock on "${alias}" successfully synchronized!`, 'success');
+        } catch (err) {
+          showToast(`Clock time sync failed: ${err.message}`, 'error');
+        } finally {
+          btn.classList.remove('spinning');
+        }
+      });
+    });
+
 
     devicesTbody.querySelectorAll('.btn-icon.ping').forEach(btn => {
       btn.addEventListener('click', () => {

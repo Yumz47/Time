@@ -952,3 +952,134 @@ test('Mutation Testing: Device deletion status and client error propagation', ()
   assert.equal(parseDeleteError(500, null), 'Failed to delete device (HTTP 500)');
 });
 
+/* ─── SYSTEM BADGE & LOGOUT UPPER RIGHT CORNER TEST SUITE ────────────────── */
+
+test('Unit Tests: System Badge layout and upper-right placement integrity in DOM', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.resolve(__dirname, '../public/index.html'), 'utf8');
+
+  // Verify topbar header structure exists
+  assert.ok(html.includes('<header class="topbar">'), 'index.html must have header.topbar');
+  assert.ok(html.includes('<div class="topbar-actions">'), 'index.html must have topbar-actions container');
+
+  // Extract topbar-actions block
+  const topbarActionsStart = html.indexOf('<div class="topbar-actions">');
+  const topbarActionsEnd = html.indexOf('</header>');
+  assert.ok(topbarActionsStart !== -1 && topbarActionsEnd > topbarActionsStart);
+  const topbarActionsHtml = html.substring(topbarActionsStart, topbarActionsEnd);
+
+  // Extract sidebar-footer block
+  const sidebarFooterStart = html.indexOf('<div class="sidebar-footer">');
+  const sidebarFooterEnd = html.indexOf('</aside>');
+  assert.ok(sidebarFooterStart !== -1 && sidebarFooterEnd > sidebarFooterStart);
+  const sidebarFooterHtml = html.substring(sidebarFooterStart, sidebarFooterEnd);
+
+  // Assert user-session-card is inside topbar-actions (upper right corner)
+  assert.ok(
+    topbarActionsHtml.includes('id="user-session-card"'),
+    'user-session-card must reside inside .topbar-actions in the upper right corner'
+  );
+
+  // Assert user-session-card is NO LONGER in sidebar-footer
+  assert.equal(
+    sidebarFooterHtml.includes('id="user-session-card"'),
+    false,
+    'user-session-card must not remain in sidebar-footer'
+  );
+
+  // Verify child elements within user-session-card inside topbar-actions
+  assert.ok(topbarActionsHtml.includes('id="user-session-avatar"'), 'Must have #user-session-avatar');
+  assert.ok(topbarActionsHtml.includes('id="user-session-name"'), 'Must have #user-session-name');
+  assert.ok(topbarActionsHtml.includes('id="user-session-role"'), 'Must have #user-session-role');
+  assert.ok(topbarActionsHtml.includes('id="btn-logout"'), 'Must have #btn-logout');
+});
+
+test('Quality Control (QA): System Badge accessibility, logout action, and style contract', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.resolve(__dirname, '../public/index.html'), 'utf8');
+  const css = fs.readFileSync(path.resolve(__dirname, '../public/style.css'), 'utf8');
+
+  // Accessibility checks
+  assert.ok(
+    html.includes('id="btn-logout"') && html.includes('aria-label="Sign Out"'),
+    'Logout button must provide explicit aria-label for screen readers'
+  );
+  assert.ok(
+    html.includes('title="Sign Out"'),
+    'Logout button must provide title attribute for tooltip'
+  );
+
+  // CSS contract verification
+  assert.ok(css.includes('.user-session-card'), 'CSS must define .user-session-card');
+  assert.ok(css.includes('.user-session-avatar'), 'CSS must define .user-session-avatar');
+  assert.ok(css.includes('.user-session-details'), 'CSS must define .user-session-details');
+  assert.ok(css.includes('.btn-logout'), 'CSS must define .btn-logout');
+  assert.ok(css.includes('.btn-logout:hover'), 'CSS must define .btn-logout:hover');
+});
+
+test('Pickle Tests: Session user badge payload serialization and avatar generation roundtrip', () => {
+  const userPayload = {
+    id: 1,
+    username: 'admin',
+    full_name: 'System Administrator',
+    role: 'admin',
+    theme: 'dark'
+  };
+
+  // Helper simulating app.js avatar initials generation
+  const deriveInitials = (name) => {
+    const initials = (name || '')
+      .split(' ')
+      .map(w => w.charAt(0))
+      .join('')
+      .substring(0, 2)
+      .toUpperCase();
+    return initials || 'US';
+  };
+
+  const serialized = JSON.stringify(userPayload);
+  const deserialized = JSON.parse(serialized);
+
+  assert.deepEqual(deserialized, userPayload);
+  assert.equal(deriveInitials(deserialized.full_name), 'SA');
+  assert.equal(deriveInitials('Viewer User'), 'VU');
+  assert.equal(deriveInitials(''), 'US');
+});
+
+test('Mutation Testing: Misplacement or omission of System Badge in topbar is detected', () => {
+  const validateTopbarBadge = (htmlContent) => {
+    const topbarStart = htmlContent.indexOf('<div class="topbar-actions">');
+    const topbarEnd = htmlContent.indexOf('</header>');
+    if (topbarStart === -1 || topbarEnd === -1) return false;
+    const actionsHtml = htmlContent.substring(topbarStart, topbarEnd);
+
+    return (
+      actionsHtml.includes('id="user-session-card"') &&
+      actionsHtml.includes('id="btn-logout"') &&
+      actionsHtml.includes('id="user-session-avatar"') &&
+      actionsHtml.includes('id="user-session-name"')
+    );
+  };
+
+  // Positive case
+  const fs = require('fs');
+  const path = require('path');
+  const validHtml = fs.readFileSync(path.resolve(__dirname, '../public/index.html'), 'utf8');
+  assert.equal(validateTopbarBadge(validHtml), true);
+
+  // Mutation 1: user-session-card removed from topbar
+  const mutant1 = validHtml.replace('id="user-session-card"', 'id="mutated-card"');
+  assert.equal(validateTopbarBadge(mutant1), false);
+
+  // Mutation 2: logout button stripped
+  const mutant2 = validHtml.replace('id="btn-logout"', '');
+  assert.equal(validateTopbarBadge(mutant2), false);
+
+  // Mutation 3: avatar element stripped
+  const mutant3 = validHtml.replace('id="user-session-avatar"', '');
+  assert.equal(validateTopbarBadge(mutant3), false);
+});
+
+

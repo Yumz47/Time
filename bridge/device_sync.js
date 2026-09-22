@@ -249,6 +249,110 @@ function diffUsers(masterUsers, slaveUsers) {
 }
 
 /**
+ * Encodes Date to ZKTeco 4-byte little-endian timestamp integer
+ * @param {Date} [d=new Date()]
+ * @returns {Buffer}
+ */
+function encodeZKTime(d = new Date()) {
+  const year = d.getFullYear() % 100;
+  const month = d.getMonth();
+  const day = d.getDate() - 1;
+  const hour = d.getHours();
+  const minute = d.getMinutes();
+  const second = d.getSeconds();
+  const val = ((year * 12 * 31 + month * 31 + day) * 86400) +
+              (hour * 60 + minute) * 60 +
+              second;
+  const buf = Buffer.alloc(4);
+  buf.writeUInt32LE(val, 0);
+  return buf;
+}
+
+/**
+ * Decodes ZKTeco 4-byte little-endian timestamp integer to Date
+ * @param {number} t
+ * @returns {Date}
+ */
+function decodeZKTime(t) {
+  const second = t % 60;
+  t = Math.floor(t / 60);
+  const minute = t % 60;
+  t = Math.floor(t / 60);
+  const hour = t % 24;
+  t = Math.floor(t / 24);
+  const day = (t % 31) + 1;
+  t = Math.floor(t / 31);
+  const month = t % 12;
+  t = Math.floor(t / 12);
+  const year = t + 2000;
+  return new Date(year, month, day, hour, minute, second);
+}
+
+/**
+ * Reads hardware time from connected ZK device
+ * @param {Object} zk
+ * @returns {Promise<Date|null>}
+ */
+async function getDeviceTime(zk) {
+  const tcp = zk.zklibTcp || zk;
+  if (!tcp || !tcp.socket) return null;
+  const rep = await tcp.executeCmd(201, ''); // CMD_GET_TIME (201)
+  if (rep && rep.length >= 12) {
+    return decodeZKTime(rep.readUInt32LE(8));
+  }
+  return null;
+}
+
+/**
+ * Synchronizes hardware RTC clock on connected ZK device to the given Date
+ * @param {Object} zk
+ * @param {Date} [targetDate=new Date()]
+ * @returns {Promise<boolean>}
+ */
+async function setDeviceTime(zk, targetDate = new Date()) {
+  const tcp = zk.zklibTcp || zk;
+  if (!tcp || !tcp.socket) return false;
+  try {
+    await tcp.disableDevice();
+  } catch (_) {}
+  const payload = encodeZKTime(targetDate);
+  await tcp.executeCmd(202, payload); // CMD_SET_TIME (202)
+  try {
+    await tcp.executeCmd(1013, ''); // CMD_REFRESHDATA
+  } catch (_) {}
+  try {
+    await tcp.enableDevice();
+  } catch (_) {}
+  return true;
+}
+
+/**
+ * Checks clock drift and aligns device hardware time if drift exceeds threshold
+ * @param {Object} zk
+ * @param {string} [deviceAlias]
+ * @param {number} [maxDriftSec=5]
+ * @returns {Promise<{synced: boolean, driftSec: number, devTime: Date|null, sysTime: Date}>}
+ */
+async function syncDeviceTimeIfDrifted(zk, deviceAlias = 'Device', maxDriftSec = 5) {
+  try {
+    const devTime = await getDeviceTime(zk);
+    if (!devTime) return { synced: false, driftSec: 0, devTime: null, sysTime: new Date() };
+    const sysTime = new Date();
+    const driftSec = Math.round((devTime.getTime() - sysTime.getTime()) / 1000);
+    if (Math.abs(driftSec) > maxDriftSec) {
+      console.log(`[DeviceSync] Clock drift detected on "${deviceAlias}": ${driftSec}s (${(driftSec/60).toFixed(1)}m). Re-aligning hardware RTC to server time...`);
+      await setDeviceTime(zk, sysTime);
+      return { synced: true, driftSec, devTime, sysTime };
+    }
+    return { synced: false, driftSec, devTime, sysTime };
+  } catch (err) {
+    console.warn(`[DeviceSync] Warning checking/setting time on "${deviceAlias}":`, err.message);
+    return { synced: false, driftSec: 0, devTime: null, sysTime: new Date() };
+  }
+}
+
+
+/**
  * Parses raw binary fingerprint templates buffer returned by ZKTeco readWithBuffer
  * @param {Buffer} buf
  * @returns {Array<{size: number, uid: number, fid: number, valid: number, template: Buffer}>}
@@ -508,6 +612,14 @@ async function syncSingleDevice(device, pool, options = {}) {
 
   try {
     await zk.createSocket();
+
+    // 0. Auto-check and synchronize device hardware clock to server time if drifted (>5s)
+    let timeSyncResult = null;
+    try {
+      timeSyncResult = await syncDeviceTimeIfDrifted(zk, device.alias || device.sn, 5);
+    } catch (tErr) {
+      console.warn(`[DeviceSync] Hardware RTC sync check warning for ${device.alias}:`, tErr.message);
+    }
 
     // 1. Fetch users from device
     let rawUsers = [];
@@ -1106,6 +1218,11 @@ module.exports = {
   sendBufferChunks,
   saveUserTemplatesBatch,
   propagateUsersFromMaster,
+  encodeZKTime,
+  decodeZKTime,
+  getDeviceTime,
+  setDeviceTime,
+  syncDeviceTimeIfDrifted,
   syncSingleDevice,
   syncAllActiveDevices,
 };

@@ -7,7 +7,14 @@ const mysql = require('mysql2/promise');
 const crypto = require('crypto');
 const net = require('net');
 const { computeDailyAttendance, resolveNormalizedType, getLocalDateString } = require('../bridge/helpers');
-const { syncSingleDevice, syncAllActiveDevices, propagateUsersFromMaster } = require('../bridge/device_sync');
+const {
+  syncSingleDevice,
+  syncAllActiveDevices,
+  propagateUsersFromMaster,
+  getDeviceTime,
+  setDeviceTime,
+  syncDeviceTimeIfDrifted,
+} = require('../bridge/device_sync');
 const {
   hashPassword,
   verifyPassword,
@@ -2062,6 +2069,28 @@ app.put('/api/devices/:id/set-master', requireAdmin, async (req, res) => {
     res.status(500).json({ success: false, error: sanitizeErrorMessage(err) });
   }
 });
+
+// 10i. Synchronize internal clock (RTC) of a hardware device with server time (Admin only)
+app.post('/api/devices/:id/sync-time', requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const [rows] = await pool.query('SELECT * FROM devices WHERE id = ?', [id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Device not found' });
+    const dev = rows[0];
+    const ipCheck = isSafeDeviceIp(dev.ip_address);
+    if (!ipCheck.valid) return res.status(400).json({ error: ipCheck.error });
+
+    const ZKLib = require('node-zklib');
+    const zk = new ZKLib(ipCheck.ip, 4370, 5000, 4000);
+    await zk.createSocket();
+    const result = await syncDeviceTimeIfDrifted(zk, dev.alias || dev.sn, 0); // 0 threshold forces immediate sync
+    await zk.disconnect();
+    res.json({ success: true, result, alias: dev.alias || dev.sn });
+  } catch (err) {
+    res.status(500).json({ success: false, error: sanitizeErrorMessage(err) });
+  }
+});
+
 
 // 11. Get single device
 app.get('/api/devices/:id', requireAuth, async (req, res) => {

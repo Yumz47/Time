@@ -7,7 +7,7 @@ const mysql = require('mysql2/promise');
 const crypto = require('crypto');
 const net = require('net');
 const { computeDailyAttendance, resolveNormalizedType, getLocalDateString } = require('../bridge/helpers');
-const { syncSingleDevice, syncAllActiveDevices } = require('../bridge/device_sync');
+const { syncSingleDevice, syncAllActiveDevices, propagateUsersFromMaster } = require('../bridge/device_sync');
 const {
   hashPassword,
   verifyPassword,
@@ -1873,7 +1873,7 @@ app.post('/api/devices/import-from-punches', async (req, res) => {
 
 // 10. Create a device
 app.post('/api/devices', requireAdmin, async (req, res) => {
-  const { sn, alias, ip_address, location, model, status } = req.body;
+  const { sn, alias, ip_address, location, model, status, is_master } = req.body;
   if (!sn || !String(sn).trim()) {
     return res.status(400).json({ error: 'Serial number (SN) is required' });
   }
@@ -1887,16 +1887,21 @@ app.post('/api/devices', requireAdmin, async (req, res) => {
   }
   const validStatuses = ['active', 'inactive'];
   const deviceStatus = validStatuses.includes(status) ? status : 'active';
+  const isMasterVal = is_master ? 1 : 0;
   try {
+    if (isMasterVal) {
+      await pool.query('UPDATE devices SET is_master = 0');
+    }
     const [result] = await pool.query(
-      `INSERT INTO devices (sn, alias, ip_address, location, model, status)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO devices (sn, alias, ip_address, location, model, is_master, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         String(sn).trim(),
         alias ? String(alias).trim() : null,
         safeIp,
         location ? String(location).trim() : null,
         model ? String(model).trim() : null,
+        isMasterVal,
         deviceStatus,
       ]
     );
@@ -2034,6 +2039,30 @@ app.post('/api/devices/sync-all', requireAdmin, async (req, res) => {
   }
 });
 
+// 10g. Propagate all enrolled users from Master Clock (GenReg1) to all active clocks (Admin only)
+app.post('/api/devices/propagate-users', requireAdmin, async (req, res) => {
+  try {
+    const result = await propagateUsersFromMaster(pool);
+    res.json({ success: true, result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: sanitizeErrorMessage(err) });
+  }
+});
+
+// 10h. Promote a device to Master Clock (Admin only)
+app.put('/api/devices/:id/set-master', requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const [rows] = await pool.query('SELECT * FROM devices WHERE id = ?', [id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Device not found' });
+    await pool.query('UPDATE devices SET is_master = 0');
+    await pool.query('UPDATE devices SET is_master = 1 WHERE id = ?', [id]);
+    res.json({ success: true, masterDeviceId: id, alias: rows[0].alias });
+  } catch (err) {
+    res.status(500).json({ success: false, error: sanitizeErrorMessage(err) });
+  }
+});
+
 // 11. Get single device
 app.get('/api/devices/:id', requireAuth, async (req, res) => {
   try {
@@ -2048,7 +2077,7 @@ app.get('/api/devices/:id', requireAuth, async (req, res) => {
 // 12. Update a device
 app.put('/api/devices/:id', requireAdmin, async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const { sn, alias, ip_address, location, model, status } = req.body;
+  const { sn, alias, ip_address, location, model, status, is_master } = req.body;
   if (!sn || !String(sn).trim()) {
     return res.status(400).json({ error: 'Serial number (SN) is required' });
   }
@@ -2063,8 +2092,11 @@ app.put('/api/devices/:id', requireAdmin, async (req, res) => {
   const validStatuses = ['active', 'inactive'];
   const deviceStatus = validStatuses.includes(status) ? status : 'active';
   try {
+    if (is_master === true || is_master === 1 || is_master === '1') {
+      await pool.query('UPDATE devices SET is_master = 0 WHERE id != ?', [id]);
+    }
     const [result] = await pool.query(
-      `UPDATE devices SET sn=?, alias=?, ip_address=?, location=?, model=?, status=? WHERE id=?`,
+      `UPDATE devices SET sn=?, alias=?, ip_address=?, location=?, model=?, status=?, is_master=COALESCE(?, is_master) WHERE id=?`,
       [
         String(sn).trim(),
         alias ? String(alias).trim() : null,
@@ -2072,6 +2104,7 @@ app.put('/api/devices/:id', requireAdmin, async (req, res) => {
         location ? String(location).trim() : null,
         model ? String(model).trim() : null,
         deviceStatus,
+        is_master !== undefined ? (is_master ? 1 : 0) : null,
         id,
       ]
     );

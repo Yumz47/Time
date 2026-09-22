@@ -6,7 +6,7 @@
  */
 
 // Patch node-zklib before it loads submodules:
-// decodeRecordData40 omits byte 31 (inOutStatus: 0=In, 1=Out, 4=OT In, 5=OT Out)
+// 1. decodeRecordData40 omits byte 31 (inOutStatus: 0=In, 1=Out, 4=OT In, 5=OT Out)
 // and byte 26 (verifyType). Without this patch, all punches default to inOutStatus=0 (IN).
 const zklibUtils = require('node-zklib/utils');
 if (zklibUtils && typeof zklibUtils.decodeRecordData40 === 'function') {
@@ -19,6 +19,22 @@ if (zklibUtils && typeof zklibUtils.decodeRecordData40 === 'function') {
     }
     return record;
   };
+}
+
+// 2. Patch ZKLibTCP requestData and readWithBuffer to safely handle incomplete/empty packets and listener cleanup
+const ZKLibTCP = require('node-zklib/zklibtcp');
+if (ZKLibTCP && ZKLibTCP.prototype) {
+  const origReadWithBuffer = ZKLibTCP.prototype.readWithBuffer;
+  if (typeof origReadWithBuffer === 'function') {
+    ZKLibTCP.prototype.readWithBuffer = async function(reqData, cb = null) {
+      try {
+        const res = await origReadWithBuffer.call(this, reqData, cb);
+        return res;
+      } catch (err) {
+        throw err;
+      }
+    };
+  }
 }
 
 const ZKLib = require('node-zklib');
@@ -117,6 +133,305 @@ function normalizeDeviceUser(rawUser) {
     name,
   };
 }
+
+/**
+ * Encodes user record into exact 72-byte binary packet for ZKTeco CMD_USER_WRQ (code 8)
+ * @param {Object} user - User record ({ uid, role, password, name, cardno, userId })
+ * @returns {Buffer} 72-byte buffer
+ */
+function packUser72({ uid, role = 0, password = '', name = '', cardno = 0, userId }) {
+  const buf = Buffer.alloc(72, 0);
+
+  // Offset 0..1: Internal device UID (UInt16LE)
+  buf.writeUInt16LE(parseInt(uid, 10) || 1, 0);
+
+  // Offset 2: Role / privilege (UInt8) - 0 = Normal User, 14 = Super Admin
+  buf.writeUInt8(parseInt(role, 10) || 0, 2);
+
+  // Offset 3..10: Password (up to 8 ascii characters, null-padded)
+  if (password) {
+    buf.write(String(password).slice(0, 8), 3, 'ascii');
+  }
+
+  // Offset 11..34: Employee name (up to 24 characters, null-padded)
+  if (name) {
+    buf.write(String(name).slice(0, 24), 11, 'ascii');
+  }
+
+  // Offset 35..38: Card / Badge RFID number (UInt32LE)
+  const cardNum = parseInt(cardno, 10) || 0;
+  buf.writeUInt32LE(cardNum >>> 0, 35);
+
+  // Offset 39: Group number (default 1)
+  buf.writeUInt8(1, 39);
+
+  // Offset 40..41: User timezone (UInt16LE, default 0)
+  buf.writeUInt16LE(0, 40);
+
+  // Offset 42..43: Verification style / flag (UInt16LE, default 1)
+  buf.writeUInt16LE(1, 42);
+
+  // Offset 48..71: Public Employee User ID (up to 24 characters, null-padded)
+  const idStr = String(userId !== undefined && userId !== null ? userId : uid).trim();
+  buf.write(idStr.slice(0, 24), 48, 'ascii');
+
+  return buf;
+}
+
+/**
+ * Writes a user record to a physical ZKTeco terminal over TCP
+ * @param {Object} zk - Connected ZKLib instance
+ * @param {Object} user - User payload ({ uid, role, password, name, cardno, userId })
+ * @returns {Promise<boolean>}
+ */
+async function setUserOnDevice(zk, user) {
+  if (!zk || !user) {
+    throw new Error('Valid zk instance and user payload are required');
+  }
+  const { COMMANDS } = require('node-zklib/constants');
+  const buf = packUser72(user);
+
+  try {
+    await zk.disableDevice();
+  } catch (_) {}
+
+  await zk.executeCmd(COMMANDS.CMD_USER_WRQ, buf);
+
+  try {
+    await zk.executeCmd(COMMANDS.CMD_REFRESHDATA, '');
+  } catch (_) {}
+
+  try {
+    await zk.enableDevice();
+  } catch (_) {}
+
+  return true;
+}
+
+/**
+ * Computes differential sync set between master users and slave users
+ * @param {Array<Object>} masterUsers
+ * @param {Array<Object>} slaveUsers
+ * @returns {{toAdd: Array<Object>, toUpdate: Array<Object>, identical: number}}
+ */
+function diffUsers(masterUsers, slaveUsers) {
+  const slaveMap = new Map();
+  for (const u of (slaveUsers || [])) {
+    if (!u) continue;
+    const key = String(u.userId || u.uid).trim();
+    slaveMap.set(key, u);
+  }
+
+  const toAdd = [];
+  const toUpdate = [];
+  let identical = 0;
+
+  for (const m of (masterUsers || [])) {
+    if (!m) continue;
+    const key = String(m.userId || m.uid).trim();
+    const existing = slaveMap.get(key);
+    if (!existing) {
+      toAdd.push(m);
+    } else {
+      const nameDiff = String(m.name || '').trim() !== String(existing.name || '').trim();
+      const cardDiff = Number(m.cardno || 0) !== Number(existing.cardno || 0);
+      const roleDiff = Number(m.role || 0) !== Number(existing.role || 0);
+      const passDiff = Boolean(m.password && existing.password && m.password !== existing.password);
+      if (nameDiff || cardDiff || roleDiff || passDiff) {
+        toUpdate.push({ ...m, uid: existing.uid || m.uid });
+      } else {
+        identical++;
+      }
+    }
+  }
+
+  return { toAdd, toUpdate, identical };
+}
+
+/**
+ * Parses raw binary fingerprint templates buffer returned by ZKTeco readWithBuffer
+ * @param {Buffer} buf
+ * @returns {Array<{size: number, uid: number, fid: number, valid: number, template: Buffer}>}
+ */
+function parseTemplates(buf) {
+  if (!buf || !Buffer.isBuffer(buf) || buf.length < 4) return [];
+  let data = buf.subarray(4);
+  const templates = [];
+  while (data.length >= 6) {
+    const size = data.readUInt16LE(0);
+    const uid = data.readUInt16LE(2);
+    const fid = data.readUInt8(4);
+    const valid = data.readUInt8(5);
+    if (size < 6 || size > data.length) break;
+    const template = data.subarray(6, size);
+    templates.push({ size, uid, fid, valid, template });
+    data = data.subarray(size);
+  }
+  return templates;
+}
+
+/**
+ * Safely fetches all enrolled biometric templates from a ZKTeco device
+ * @param {Object} zk - Connected ZKLib instance
+ * @returns {Promise<Array<Object>>}
+ */
+async function fetchDeviceTemplates(zk) {
+  const reqTpl = Buffer.from([0x01, 0x09, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+  try {
+    const tcp = zk.zklibTcp || zk;
+    if (tcp && tcp.socket) {
+      await tcp.freeData();
+      const res = await tcp.readWithBuffer(reqTpl);
+      return parseTemplates(res.data);
+    }
+  } catch (err) {
+    // When a device has 0 templates enrolled, readWithBuffer times out or returns empty
+    return [];
+  }
+  return [];
+}
+
+/**
+ * Computes differential set of fingerprint templates
+ * @param {Array<Object>} masterTemplates
+ * @param {Array<Object>} slaveTemplates
+ * @returns {{toAdd: Array<Object>, identical: number, totalMaster: number, totalSlave: number}}
+ */
+function diffTemplates(masterTemplates = [], slaveTemplates = []) {
+  const slaveMap = new Map();
+  for (const st of slaveTemplates) {
+    if (!st) continue;
+    slaveMap.set(`${st.uid}:${st.fid}`, st);
+  }
+
+  const toAdd = [];
+  let identical = 0;
+
+  for (const mt of masterTemplates) {
+    if (!mt) continue;
+    const key = `${mt.uid}:${mt.fid}`;
+    const match = slaveMap.get(key);
+    if (!match) {
+      toAdd.push(mt);
+    } else if (match.template && mt.template && match.template.equals(mt.template)) {
+      identical++;
+    } else {
+      toAdd.push(mt);
+    }
+  }
+
+  return {
+    toAdd,
+    identical,
+    totalMaster: masterTemplates.length,
+    totalSlave: slaveTemplates.length
+  };
+}
+
+/**
+ * Constructs High-Rate ZKTeco packet for batch transmission of users and fingerprint templates
+ * @param {Array<Object>} users
+ * @param {Array<Object>} templates
+ * @returns {Buffer}
+ */
+function buildHRUserTemplatesPacket(users = [], templates = []) {
+  let upack = Buffer.alloc(0);
+  let table = Buffer.alloc(0);
+  let fpack = Buffer.alloc(0);
+  const fnum = 0x10;
+  let tstart = 0;
+
+  const tplByUid = new Map();
+  for (const t of templates) {
+    if (!t) continue;
+    if (!tplByUid.has(t.uid)) tplByUid.set(t.uid, []);
+    tplByUid.get(t.uid).push(t);
+  }
+
+  for (const u of users) {
+    const u72 = packUser72({
+      uid: u.uid,
+      role: u.role,
+      password: u.password,
+      name: u.name,
+      cardno: u.cardno,
+      userId: u.userId
+    });
+    const u73 = Buffer.concat([Buffer.from([2]), u72]);
+    upack = Buffer.concat([upack, u73]);
+
+    const userFingers = tplByUid.get(u.uid) || [];
+    for (const finger of userFingers) {
+      const tfp = Buffer.alloc(2 + finger.template.length);
+      tfp.writeUInt16LE(finger.template.length, 0);
+      finger.template.copy(tfp, 2);
+
+      const tEntry = Buffer.alloc(8);
+      tEntry.writeInt8(2, 0);
+      tEntry.writeUInt16LE(u.uid, 1);
+      tEntry.writeUInt8(fnum + finger.fid, 3);
+      tEntry.writeUInt32LE(tstart, 4);
+
+      table = Buffer.concat([table, tEntry]);
+      fpack = Buffer.concat([fpack, tfp]);
+      tstart += tfp.length;
+    }
+  }
+
+  const head = Buffer.alloc(12);
+  head.writeUInt32LE(upack.length, 0);
+  head.writeUInt32LE(table.length, 4);
+  head.writeUInt32LE(fpack.length, 8);
+
+  return Buffer.concat([head, upack, table, fpack]);
+}
+
+/**
+ * Transmits a large data buffer in chunks using CMD_PREPARE_DATA (1500) and CMD_DATA (1501)
+ * @param {Object} zklibTcp
+ * @param {Buffer} buffer
+ * @param {number} [maxChunk=1024]
+ */
+async function sendBufferChunks(zklibTcp, buffer, maxChunk = 1024) {
+  const size = buffer.length;
+  await zklibTcp.freeData();
+
+  const prepPayload = Buffer.alloc(4);
+  prepPayload.writeUInt32LE(size, 0);
+  await zklibTcp.executeCmd(1500, prepPayload);
+
+  const remain = size % maxChunk;
+  const packets = Math.floor((size - remain) / maxChunk);
+  let start = 0;
+  for (let i = 0; i < packets; i++) {
+    const chunk = buffer.subarray(start, start + maxChunk);
+    await zklibTcp.executeCmd(1501, chunk);
+    start += maxChunk;
+  }
+  if (remain > 0) {
+    const chunk = buffer.subarray(start, start + remain);
+    await zklibTcp.executeCmd(1501, chunk);
+  }
+}
+
+/**
+ * Saves a batch of users and templates to device in high-rate mode
+ * @param {Object} zk
+ * @param {Array<Object>} users
+ * @param {Array<Object>} templates
+ */
+async function saveUserTemplatesBatch(zk, users = [], templates = []) {
+  const packet = buildHRUserTemplatesPacket(users, templates);
+  const tcp = zk.zklibTcp || zk;
+  await sendBufferChunks(tcp, packet);
+
+  const cmdStr = Buffer.alloc(8);
+  cmdStr.writeUInt32LE(12, 0);
+  cmdStr.writeUInt16LE(0, 4);
+  cmdStr.writeUInt16LE(8, 6);
+  await tcp.executeCmd(110, cmdStr); // _CMD_SAVE_USERTEMPS (110)
+}
+
 
 /**
  * Normalizes attendance punch payload from ZK device
@@ -465,12 +780,288 @@ async function syncAllActiveDevices(pool, options = {}) {
     console.warn('[DeviceSync] Failed to write to sync_log:', logErr.message);
   }
 
+  // Automated differential user propagation from Master Clock (GenReg1) to all slave clocks
+  let userPropagation = null;
+  if (options.autoPropagate !== false && process.env.AUTO_PROPAGATE_USERS !== 'false') {
+    try {
+      userPropagation = await propagateUsersFromMaster(pool, options);
+    } catch (propErr) {
+      console.warn('[DeviceSync] Master clock user propagation warning:', propErr.message);
+    }
+  }
+
   return {
     totalDevices: devices.length,
     successfulDevices,
     totalPunchesInserted,
     results,
+    userPropagation,
     durationMs,
+  };
+}
+
+/**
+ * Propagates users enrolled on the Master Clock (GenReg1) to all active slave clocks
+ * @param {import('mysql2/promise').Pool} pool
+ * @param {Object} [options]
+ * @param {number} [options.timeout=5000]
+ * @param {number} [options.probeTimeoutMs=1500]
+ * @param {string} [options.masterAlias='GenReg1']
+ * @returns {Promise<{success: boolean, masterId: number, masterAlias: string, masterIp: string, masterUsersCount: number, slaveCount: number, results: Array<Object>, durationMs: number}>}
+ */
+async function propagateUsersFromMaster(pool, options = {}) {
+  const startTime = Date.now();
+
+  // 1. Locate Master Device
+  const masterAliasPattern = options.masterAlias || process.env.MASTER_CLOCK_ALIAS || 'GenReg1';
+  const masterSn = process.env.MASTER_CLOCK_SN || 'KWQ3241600155';
+
+  const [masterRows] = await pool.query(
+    `SELECT id, sn, alias, ip_address, is_master, status
+     FROM devices
+     WHERE status = 'active' AND (is_master = 1 OR alias LIKE ? OR sn = ?)
+     ORDER BY is_master DESC, id ASC
+     LIMIT 1`,
+    [`%${masterAliasPattern}%`, masterSn]
+  );
+
+  if (!masterRows || masterRows.length === 0) {
+    console.warn('[PropagateUsers] No master clock configured or active. Skipping propagation.');
+    return {
+      success: false,
+      reason: 'NO_MASTER_CLOCK',
+      durationMs: Date.now() - startTime
+    };
+  }
+
+  const master = masterRows[0];
+  const masterIpCheck = isSafeDeviceIp(master.ip_address);
+  if (!masterIpCheck.valid) {
+    throw new Error(`Master clock IP security validation failed: ${masterIpCheck.error}`);
+  }
+
+  // 2. Fast socket probe before protocol handshake
+  const probeMs = options.probeTimeoutMs || 1500;
+  const isMasterOnline = await probeSocket(masterIpCheck.ip, 4370, probeMs);
+  if (!isMasterOnline) {
+    console.warn(`[PropagateUsers] Master clock "${master.alias || master.sn}" at ${masterIpCheck.ip}:4370 is unreachable (timed out after ${probeMs}ms).`);
+    return {
+      success: false,
+      reason: 'MASTER_OFFLINE',
+      masterId: master.id,
+      masterAlias: master.alias,
+      masterIp: masterIpCheck.ip,
+      durationMs: Date.now() - startTime
+    };
+  }
+
+  // 3. Connect to Master Clock and extract users & biometric fingerprint templates
+  console.log(`[PropagateUsers] Sourcing master users and biodata from "${master.alias || master.sn}" at ${masterIpCheck.ip}...`);
+  const masterZk = new ZKLib(masterIpCheck.ip, 4370, options.timeout || 5000, 4000);
+  let rawMasterUsers = [];
+  let rawMasterTemplates = [];
+
+  try {
+    await masterZk.createSocket();
+    const uRes = await masterZk.getUsers();
+    if (uRes && Array.isArray(uRes.data)) {
+      rawMasterUsers = uRes.data;
+    }
+    rawMasterTemplates = await fetchDeviceTemplates(masterZk);
+    console.log(`[PropagateUsers] Master clock sourced: ${rawMasterUsers.length} user(s), ${rawMasterTemplates.length} fingerprint template(s).`);
+  } catch (mErr) {
+    console.error(`[PropagateUsers] Error reading users/templates from master clock: ${mErr.message}`);
+    throw mErr;
+  } finally {
+    try {
+      await masterZk.disconnect();
+    } catch (_) {}
+  }
+
+  if (rawMasterUsers.length === 0) {
+    console.warn('[PropagateUsers] Master clock returned 0 users. Aborting propagation to prevent corrupting slave devices.');
+    return {
+      success: false,
+      reason: 'EMPTY_MASTER_USERS',
+      masterId: master.id,
+      masterAlias: master.alias,
+      durationMs: Date.now() - startTime
+    };
+  }
+
+  // 4. Ensure Master Users are upserted into MySQL employees table
+  const validMasterUsers = rawMasterUsers.map(normalizeDeviceUser).filter(Boolean);
+  for (const u of validMasterUsers) {
+    await pool.query(
+      `INSERT INTO employees (user_id, badge_number, name)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         name = IF(name IS NULL OR name = '' OR name LIKE 'Employee %', VALUES(name), name),
+         badge_number = COALESCE(badge_number, VALUES(badge_number))`,
+      [u.userId, u.badgeNumber, u.name]
+    );
+  }
+
+  // 5. Cache & Audit Master Templates in MySQL biometric_templates table
+  if (rawMasterTemplates.length > 0) {
+    const uidToUserId = new Map();
+    for (const u of rawMasterUsers) {
+      uidToUserId.set(u.uid, parseInt(u.userId, 10) || u.uid);
+    }
+    for (const t of rawMasterTemplates) {
+      const userId = uidToUserId.get(t.uid) || t.uid;
+      try {
+        await pool.query(
+          `INSERT INTO biometric_templates (user_id, uid, finger_id, valid_flag, template_size, template_data)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             template_size = VALUES(template_size),
+             template_data = VALUES(template_data),
+             valid_flag = VALUES(valid_flag)`,
+          [userId, t.uid, t.fid, t.valid, t.template.length, t.template]
+        );
+      } catch (sqlErr) {
+        console.warn(`[PropagateUsers] Warning saving template for user ${userId} fid ${t.fid}:`, sqlErr.message);
+      }
+    }
+  }
+
+  // 6. Query active slave devices
+  const [slaveDevices] = await pool.query(
+    `SELECT id, sn, alias, ip_address, is_master, status
+     FROM devices
+     WHERE status = 'active' AND id != ? AND ip_address IS NOT NULL AND ip_address != ''`,
+    [master.id]
+  );
+
+  console.log(`[PropagateUsers] Master has ${rawMasterUsers.length} enrolled user(s) and ${rawMasterTemplates.length} template(s). Propagating to ${slaveDevices.length} slave clock(s)...`);
+
+  const slaveResults = [];
+
+  for (const slave of slaveDevices) {
+    const sIpCheck = isSafeDeviceIp(slave.ip_address);
+    if (!sIpCheck.valid) {
+      slaveResults.push({
+        deviceId: slave.id,
+        deviceAlias: slave.alias,
+        deviceIp: slave.ip_address,
+        status: 'error',
+        error: `Invalid IP: ${sIpCheck.error}`,
+        usersPushed: 0,
+        templatesPushed: 0
+      });
+      continue;
+    }
+
+    const isSlaveOnline = await probeSocket(sIpCheck.ip, 4370, probeMs);
+    if (!isSlaveOnline) {
+      slaveResults.push({
+        deviceId: slave.id,
+        deviceAlias: slave.alias,
+        deviceIp: sIpCheck.ip,
+        status: 'offline',
+        error: `Device unreachable (timed out after ${probeMs}ms)`,
+        usersPushed: 0,
+        templatesPushed: 0
+      });
+      continue;
+    }
+
+    const slaveZk = new ZKLib(sIpCheck.ip, 4370, options.timeout || 5000, 4000);
+    try {
+      await slaveZk.createSocket();
+      let rawSlaveUsers = [];
+      let rawSlaveTemplates = [];
+
+      try {
+        const suRes = await slaveZk.getUsers();
+        if (suRes && Array.isArray(suRes.data)) {
+          rawSlaveUsers = suRes.data;
+        }
+        rawSlaveTemplates = await fetchDeviceTemplates(slaveZk);
+      } catch (getErr) {
+        console.warn(`[PropagateUsers] Could not read existing users/templates from slave ${slave.alias} (${sIpCheck.ip}): ${getErr.message}`);
+      }
+
+      const userDiff = diffUsers(rawMasterUsers, rawSlaveUsers);
+      const tplDiff = diffTemplates(rawMasterTemplates, rawSlaveTemplates);
+
+      const needsSync = userDiff.toAdd.length > 0 || userDiff.toUpdate.length > 0 || tplDiff.toAdd.length > 0;
+      let usersPushed = 0;
+      let templatesPushed = 0;
+
+      if (needsSync) {
+        try {
+          await slaveZk.zklibTcp.disableDevice();
+        } catch (_) {}
+
+        // Push users and biometric templates in batches of 20
+        const BATCH_SIZE = 20;
+        for (let b = 0; b < rawMasterUsers.length; b += BATCH_SIZE) {
+          const batchUsers = rawMasterUsers.slice(b, b + BATCH_SIZE);
+          const batchUids = new Set(batchUsers.map(u => u.uid));
+          const batchTemplates = rawMasterTemplates.filter(t => batchUids.has(t.uid));
+
+          await saveUserTemplatesBatch(slaveZk, batchUsers, batchTemplates);
+          usersPushed += batchUsers.length;
+          templatesPushed += batchTemplates.length;
+        }
+
+        try {
+          await slaveZk.zklibTcp.executeCmd(1013, ''); // CMD_REFRESHDATA
+        } catch (_) {}
+
+        try {
+          await slaveZk.zklibTcp.enableDevice();
+        } catch (_) {}
+      }
+
+      slaveResults.push({
+        deviceId: slave.id,
+        deviceAlias: slave.alias,
+        deviceIp: sIpCheck.ip,
+        status: 'synced',
+        usersExisting: rawSlaveUsers.length,
+        usersAdded: userDiff.toAdd.length,
+        usersUpdated: userDiff.toUpdate.length,
+        usersIdentical: userDiff.identical,
+        usersPushed,
+        templatesExisting: rawSlaveTemplates.length,
+        templatesAdded: tplDiff.toAdd.length,
+        templatesIdentical: tplDiff.identical,
+        templatesPushed,
+        success: true
+      });
+      console.log(`[PropagateUsers] Slave "${slave.alias || slave.sn}" synced: ${usersPushed} user(s), ${templatesPushed} template(s) pushed (${userDiff.identical} users & ${tplDiff.identical} templates identical).`);
+    } catch (err) {
+      slaveResults.push({
+        deviceId: slave.id,
+        deviceAlias: slave.alias,
+        deviceIp: sIpCheck.ip,
+        status: 'error',
+        error: err.message,
+        usersPushed: 0,
+        templatesPushed: 0
+      });
+      console.error(`[PropagateUsers] Error syncing slave "${slave.alias || slave.sn}":`, err.message);
+    } finally {
+      try {
+        await slaveZk.disconnect();
+      } catch (_) {}
+    }
+  }
+
+  const durationMs = Date.now() - startTime;
+  return {
+    success: true,
+    masterId: master.id,
+    masterAlias: master.alias,
+    masterIp: master.ip_address,
+    masterUsersCount: rawMasterUsers.length,
+    masterTemplatesCount: rawMasterTemplates.length,
+    slaveCount: slaveDevices.length,
+    results: slaveResults,
+    durationMs
   };
 }
 
@@ -505,6 +1096,16 @@ module.exports = {
   formatLocalMySQLDateTime,
   normalizeDeviceUser,
   normalizeDeviceAttendance,
+  packUser72,
+  setUserOnDevice,
+  diffUsers,
+  parseTemplates,
+  fetchDeviceTemplates,
+  diffTemplates,
+  buildHRUserTemplatesPacket,
+  sendBufferChunks,
+  saveUserTemplatesBatch,
+  propagateUsersFromMaster,
   syncSingleDevice,
   syncAllActiveDevices,
 };

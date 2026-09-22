@@ -31,8 +31,7 @@ Thumbs.db
 *.swp
 *.swo
 
-# Temporary and local data directories
+# Temporary directories
 tmp/
 temp/
 scratch/
-data/

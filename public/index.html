@@ -767,6 +767,10 @@
               <input type="text" id="device-search-input" placeholder="Search by SN, alias, or IP...">
             </div>
             <div class="toolbar-spacer"></div>
+            <button class="btn-secondary" id="btn-propagate-users" style="border-color: rgba(250,204,21,0.4); color: #facc15;" title="Propagate enrolled users from Master Clock (GenReg1) to all active slave clocks">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              Sync Users from Master (GenReg1)
+            </button>
             <button class="btn-secondary" id="btn-sync-all-devices" title="Directly pull users and punches from all active hardware clocks (port 4370)">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6"/><path d="M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
               Sync All Devices
@@ -1130,6 +1134,15 @@
             <option value="active">Active</option>
             <option value="inactive">Inactive</option>
           </select>
+        </div>
+        <div class="form-group" style="display:flex; align-items:center; gap:10px; margin-top:12px; padding:10px 14px; background:rgba(250,204,21,0.06); border:1px solid rgba(250,204,21,0.25); border-radius:8px;">
+          <input type="checkbox" id="device-form-master" style="width:18px; height:18px; cursor:pointer;">
+          <div>
+            <label for="device-form-master" style="margin-bottom:0; cursor:pointer; font-weight:600; color:var(--text-primary);">
+              ★ Designate as Master Clock
+            </label>
+            <div style="font-size:0.75rem; color:var(--text-secondary);">Enrolled users on this device are automatically distributed to other clocks</div>
+          </div>
         </div>
       </div>
       <div class="modal-footer">

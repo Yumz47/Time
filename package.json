@@ -10,7 +10,7 @@
     "sync:devices": "node bridge/device_sync.js",
     "sync:legacy-access": "node bridge/legacy/bridge.js",
     "migrate:all": "node bridge/legacy/migrate_all_tables.js",
-    "test": "NODE_ENV=test node --test --test-force-exit tests/helpers.test.js tests/device_sync.test.js tests/schedules.test.js tests/theme.test.js tests/date_helper.test.js tests/docker_config.test.js tests/platform.test.js tests/reports_studio.test.js tests/security.test.js"
+    "test": "NODE_ENV=test node --test --test-force-exit tests/helpers.test.js tests/device_sync.test.js tests/clock_master_sync.test.js tests/schedules.test.js tests/theme.test.js tests/date_helper.test.js tests/docker_config.test.js tests/platform.test.js tests/reports_studio.test.js tests/security.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

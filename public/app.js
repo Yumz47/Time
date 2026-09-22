@@ -2972,6 +2972,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const deviceFormModel = document.getElementById('device-form-model');
   const deviceFormLocation = document.getElementById('device-form-location');
   const deviceFormStatus = document.getElementById('device-form-status');
+  const deviceFormMaster = document.getElementById('device-form-master');
 
   const btnTestAllDevices = document.getElementById('btn-test-all-devices');
   let deviceConnectionStatuses = {};
@@ -3093,7 +3094,10 @@ document.addEventListener('DOMContentLoaded', () => {
     devicesTbody.innerHTML = filtered.map(d => `
       <tr>
         <td><span class="badge-number font-mono">${escapeHtml(d.sn)}</span></td>
-        <td><strong>${escapeHtml(d.alias || '—')}</strong></td>
+        <td>
+          <strong>${escapeHtml(d.alias || '—')}</strong>
+          ${Boolean(d.is_master) ? '<span class="master-badge" style="background:rgba(250,204,21,0.18); color:#facc15; border:1px solid rgba(250,204,21,0.4); font-size:0.68rem; padding:2px 7px; border-radius:12px; margin-left:6px; font-weight:700; letter-spacing:0.04em;">★ MASTER</span>' : ''}
+        </td>
         <td><span class="font-mono" style="color:var(--accent-cyan);">${escapeHtml(d.ip_address || '—')}</span></td>
         <td style="color:var(--text-secondary);">${escapeHtml(d.location || '—')}</td>
         <td style="color:var(--text-muted); font-size:0.82rem;">${escapeHtml(d.model || '—')}</td>
@@ -3102,6 +3106,11 @@ document.addEventListener('DOMContentLoaded', () => {
         <td><span class="punch-count-pill">${Number(d.punch_count).toLocaleString()}</span></td>
         <td>
           <div class="table-actions">
+            ${!Boolean(d.is_master) ? `
+            <button class="btn-icon set-master" data-id="${d.id}" data-alias="${escapeHtml(d.alias || d.sn)}" title="Designate as Master Clock">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+            </button>
+            ` : ''}
             <button class="btn-icon sync-device" data-id="${d.id}" data-alias="${escapeHtml(d.alias || d.sn)}" title="Direct Sync users & punches (port 4370)">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21.5 2v6h-6"/><path d="M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
             </button>
@@ -3118,6 +3127,31 @@ document.addEventListener('DOMContentLoaded', () => {
         </td>
       </tr>
     `).join('');
+
+    devicesTbody.querySelectorAll('.btn-icon.set-master').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = parseInt(btn.dataset.id, 10);
+        const alias = btn.dataset.alias;
+        if (!confirm(`Designate "${alias}" as the new Master Clock? User records and biometric templates will be sourced from this device.`)) return;
+        try {
+          const res = await apiFetch(`/api/devices/${id}/set-master`, { method: 'PUT' });
+          const data = await res.json();
+          if (!data.success) throw new Error(data.error || 'Failed to set master clock');
+          showToast(`Clock "${alias}" is now designated as the Master Clock`, 'success');
+          loadDevices();
+        } catch (err) {
+          showToast(`Error: ${err.message}`, 'error');
+        }
+      });
+    });
+
+    const activeMaster = list.find(d => Boolean(d.is_master));
+    if (btnPropagateUsers && activeMaster) {
+      btnPropagateUsers.innerHTML = `
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Sync Users from Master (${escapeHtml(activeMaster.alias || activeMaster.sn)})
+      `;
+    }
 
     devicesTbody.querySelectorAll('.btn-icon.sync-device').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -3164,6 +3198,7 @@ document.addEventListener('DOMContentLoaded', () => {
         deviceFormModel.value = d.model || '';
         deviceFormLocation.value = d.location || '';
         deviceFormStatus.value = d.status || 'active';
+        if (deviceFormMaster) deviceFormMaster.checked = Boolean(d.is_master);
       } catch (e) {
         showToast('Error loading device details', 'error');
       }
@@ -3176,6 +3211,7 @@ document.addEventListener('DOMContentLoaded', () => {
       deviceFormModel.value = '';
       deviceFormLocation.value = '';
       deviceFormStatus.value = 'active';
+      if (deviceFormMaster) deviceFormMaster.checked = false;
     }
     deviceModal.style.display = 'flex';
   }
@@ -3183,7 +3219,10 @@ document.addEventListener('DOMContentLoaded', () => {
   async function deleteDevice(id) {
     try {
       const res = await apiFetch(`/api/devices/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to delete device');
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Failed to delete device (HTTP ${res.status})`);
+      }
       showToast('Device removed from registry', 'success');
       loadDevices();
     } catch (e) {
@@ -3203,6 +3242,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const model = deviceFormModel.value.trim();
     const location = deviceFormLocation.value.trim();
     const status = deviceFormStatus.value;
+    const is_master = deviceFormMaster ? (deviceFormMaster.checked ? 1 : 0) : 0;
 
     if (!sn) {
       showToast('Serial number is required', 'error');
@@ -3215,7 +3255,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const res = await apiFetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sn, alias, ip_address, model, location, status })
+        body: JSON.stringify({ sn, alias, ip_address, model, location, status, is_master })
       });
       if (!res.ok) {
         const d = await res.json();
@@ -3279,6 +3319,29 @@ document.addEventListener('DOMContentLoaded', () => {
     } finally {
       btnSyncAllDevices.disabled = false;
       btnSyncAllDevices.classList.remove('loading');
+    }
+  });
+
+  const btnPropagateUsers = document.getElementById('btn-propagate-users');
+  btnPropagateUsers?.addEventListener('click', async () => {
+    btnPropagateUsers.disabled = true;
+    btnPropagateUsers.classList.add('loading');
+    showToast('Initiating Master Clock user propagation from GenReg1...', 'info');
+    try {
+      const res = await apiFetch('/api/devices/propagate-users', { method: 'POST' });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || data.result?.reason || 'Propagation failed');
+      const r = data.result;
+      const synced = (r.results || []).filter(s => s.status === 'synced').length;
+      const pushedUsers = (r.results || []).reduce((acc, s) => acc + (s.usersPushed || 0), 0);
+      const pushedTpls = (r.results || []).reduce((acc, s) => acc + (s.templatesPushed || 0), 0);
+      showToast(`Master Clock Sync complete! ${r.masterUsersCount} users & ${r.masterTemplatesCount || 0} fingerprints sourced from "${r.masterAlias}". ${pushedUsers} user(s) and ${pushedTpls} fingerprint(s) pushed across ${synced} slave clock(s).`, 'success');
+      loadDevices();
+    } catch (e) {
+      showToast(`Propagation failed: ${e.message}`, 'error');
+    } finally {
+      btnPropagateUsers.disabled = false;
+      btnPropagateUsers.classList.remove('loading');
     }
   });
 

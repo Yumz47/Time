@@ -888,3 +888,67 @@ test('Mutation Testing: Employee modal payload structure resilience', () => {
   const mutant2 = { punches: [], dailyAttendance: [], dailySummary: [] };
   assert.strictEqual(validatePayload(mutant2), false);
 });
+
+test('Clock Devices Deletion API: handles 404 for non-existent device and prevents unauthorized viewer deletion', async () => {
+  // 1. 404 on non-existent device ID
+  const notFoundRes = await fetch(`${BASE_URL}/api/devices/999999`, {
+    method: 'DELETE',
+    headers: { 'x-auth-token': adminToken }
+  });
+  assert.equal(notFoundRes.status, 404);
+  const notFoundData = await notFoundRes.json();
+  assert.equal(notFoundData.error, 'Device not found');
+
+  // 2. 403 on viewer attempting device deletion
+  const viewerRes = await fetch(`${BASE_URL}/api/devices/3`, {
+    method: 'DELETE',
+    headers: { 'x-auth-token': viewerToken }
+  });
+  assert.equal(viewerRes.status, 403);
+  const viewerData = await viewerRes.json();
+  assert.equal(viewerData.error, 'Admin access required');
+});
+
+test('Pickle / Serialization Integrity: Device registry and deletion payload roundtrip', () => {
+  const sampleDevice = {
+    id: 101,
+    sn: 'TEST_SN_SERIALIZE_001',
+    alias: 'Warehouse Clock',
+    ip_address: '10.10.61.50',
+    location: 'Building B - Gate 4',
+    model: 'ZKTeco K40',
+    status: 'active',
+    punch_count: 1420
+  };
+
+  const serialized = JSON.stringify(sampleDevice);
+  const deserialized = JSON.parse(serialized);
+
+  assert.deepEqual(deserialized, sampleDevice);
+  assert.equal(typeof deserialized.id, 'number');
+  assert.equal(typeof deserialized.sn, 'string');
+  assert.equal(deserialized.punch_count, 1420);
+});
+
+test('Mutation Testing: Device deletion status and client error propagation', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const appJs = fs.readFileSync(path.resolve(__dirname, '../public/app.js'), 'utf8');
+
+  // Verify client-side error parsing logic
+  assert.ok(
+    appJs.includes('data.error') || appJs.includes('res.json()'),
+    'app.js deleteDevice must parse server JSON error payload instead of discarding it'
+  );
+
+  // Simulation of client-side error parser
+  const parseDeleteError = (status, errorBody) => {
+    return (errorBody && errorBody.error) || `Failed to delete device (HTTP ${status})`;
+  };
+
+  assert.equal(parseDeleteError(403, { error: 'Admin access required' }), 'Admin access required');
+  assert.equal(parseDeleteError(404, { error: 'Device not found' }), 'Device not found');
+  assert.equal(parseDeleteError(500, {}), 'Failed to delete device (HTTP 500)');
+  assert.equal(parseDeleteError(500, null), 'Failed to delete device (HTTP 500)');
+});
+

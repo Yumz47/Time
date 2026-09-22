@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS devices (
     ip_address VARCHAR(45),
     location VARCHAR(150),
     model VARCHAR(100),
+    is_master TINYINT(1) NOT NULL DEFAULT 0,
     status ENUM('active', 'inactive') DEFAULT 'active',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -67,3 +68,19 @@ CREATE TABLE IF NOT EXISTS sync_log (
     status VARCHAR(50) DEFAULT 'SUCCESS',
     error_message TEXT
 ) ENGINE=InnoDB;
+
+-- 6. Biometric Fingerprint Templates
+CREATE TABLE IF NOT EXISTS biometric_templates (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    uid INT NOT NULL,
+    finger_id TINYINT NOT NULL,
+    valid_flag TINYINT NOT NULL DEFAULT 1,
+    template_size INT NOT NULL,
+    template_data MEDIUMBLOB NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_uid_fid (uid, finger_id),
+    INDEX idx_user_id (user_id)
+) ENGINE=InnoDB;
+

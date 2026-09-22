@@ -5,9 +5,6 @@
 
 FROM node:22-alpine AS base
 
-# Install dumb-init or required native tools if needed
-RUN apk add --no-cache tzdata
-
 WORKDIR /app
 
 # Set default production environment

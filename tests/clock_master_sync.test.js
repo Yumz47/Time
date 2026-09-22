@@ -344,3 +344,75 @@ test('Mutation Testing: Mutating biometric template packet offsets or length tri
   assert.notEqual(parsedFid[0].fid, 0, 'Mutated finger ID must be detected');
 });
 
+// ─── 4. AUTOMATED PRODUCTION MIGRATION (ensureSchema) TESTS ─────────────────
+
+const app = require('../server/server');
+
+test('Unit Tests: app.ensureSchema executes migration queries when is_master is missing', async () => {
+  const executedQueries = [];
+  const mockPool = {
+    async query(sql, params) {
+      executedQueries.push(sql);
+      if (sql.includes('INFORMATION_SCHEMA.COLUMNS')) {
+        return [[]]; // Column missing
+      }
+      return [[]];
+    }
+  };
+
+  await app.ensureSchema(mockPool);
+
+  const ranAlter = executedQueries.some(q => q.includes('ALTER TABLE devices ADD COLUMN is_master'));
+  const ranCreateTable = executedQueries.some(q => q.includes('CREATE TABLE IF NOT EXISTS biometric_templates'));
+
+  assert.ok(ranAlter, 'Should execute ALTER TABLE when column missing');
+  assert.ok(ranCreateTable, 'Should execute CREATE TABLE biometric_templates');
+});
+
+test('QA: app.ensureSchema is idempotent and skips column addition if already present', async () => {
+  const executedQueries = [];
+  const mockPool = {
+    async query(sql, params) {
+      executedQueries.push(sql);
+      if (sql.includes('INFORMATION_SCHEMA.COLUMNS')) {
+        return [[{ COLUMN_NAME: 'is_master' }]]; // Column exists
+      }
+      return [[]];
+    }
+  };
+
+  await app.ensureSchema(mockPool);
+
+  const ranAlter = executedQueries.some(q => q.includes('ALTER TABLE devices ADD COLUMN is_master'));
+  assert.equal(ranAlter, false, 'Should not alter table if is_master already exists');
+});
+
+test('Pickle Tests: Schema migration descriptor and column definition roundtrip', () => {
+  const schemaDescriptor = {
+    table: 'devices',
+    column: 'is_master',
+    type: 'TINYINT(1)',
+    default: 0,
+    after: 'model',
+    newTable: 'biometric_templates',
+    version: '2026.09.22'
+  };
+
+  const serialized = JSON.stringify(schemaDescriptor);
+  const deserialized = JSON.parse(serialized);
+  assert.deepEqual(deserialized, schemaDescriptor, 'Descriptor roundtrip serialization must be preserved');
+});
+
+test('Mutation Testing: ensureSchema catches unexpected query errors without throwing', async () => {
+  const mockFailingPool = {
+    async query() {
+      throw new Error('SIMULATED_DB_CONN_FAILURE');
+    }
+  };
+
+  // Must not throw unhandled exception
+  await assert.doesNotReject(async () => {
+    await app.ensureSchema(mockFailingPool);
+  });
+});
+

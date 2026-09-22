@@ -2318,10 +2318,47 @@ app.get('*', (req, res) => {
   res.sendFile(path.resolve(__dirname, '../public/index.html'));
 });
 
+// Automatic Schema Migration on Container Startup
+async function ensureSchema(dbPool = pool) {
+  try {
+    const [cols] = await dbPool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'devices' AND COLUMN_NAME = 'is_master'`
+    );
+    if (!cols || cols.length === 0) {
+      console.log('[Migration] Adding column is_master to devices table...');
+      await dbPool.query('ALTER TABLE devices ADD COLUMN is_master TINYINT(1) NOT NULL DEFAULT 0 AFTER model');
+    }
+
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS biometric_templates (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        uid INT NOT NULL,
+        finger_id TINYINT NOT NULL,
+        valid_flag TINYINT NOT NULL DEFAULT 1,
+        template_size INT NOT NULL,
+        template_data MEDIUMBLOB NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_uid_fid (uid, finger_id),
+        INDEX idx_user_id (user_id)
+      ) ENGINE=InnoDB;
+    `);
+  } catch (err) {
+    console.warn('[Migration] ensureSchema warning:', err.message);
+  }
+}
+app.ensureSchema = ensureSchema;
+
 // Start Server
 if (require.main === module) {
-  app.listen(port, () => {
-    console.log(`[Server] Personnel Time & Attendance Server running at http://localhost:${port}`);
+  ensureSchema().catch((err) => {
+    console.error('[Migration] Failed to run schema migration on startup:', err.message);
+  }).finally(() => {
+    app.listen(port, () => {
+      console.log(`[Server] Personnel Time & Attendance Server running at http://localhost:${port}`);
+    });
   });
 }
 

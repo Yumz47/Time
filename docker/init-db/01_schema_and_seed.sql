@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS `devices` (
   `ip_address` VARCHAR(45) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `location` VARCHAR(150) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `model` VARCHAR(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `is_master` TINYINT(1) NOT NULL DEFAULT '0',
   `status` ENUM('active','inactive') COLLATE utf8mb4_unicode_ci DEFAULT 'active',
   `created_at` TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -126,6 +127,22 @@ CREATE TABLE IF NOT EXISTS `leaves` (
   KEY `idx_user` (`user_id`),
   KEY `idx_dates` (`start_date`,`end_date`),
   CONSTRAINT `fk_leave_emp` FOREIGN KEY (`user_id`) REFERENCES `employees` (`user_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 9. Biometric Fingerprint Templates
+CREATE TABLE IF NOT EXISTS `biometric_templates` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `user_id` INT NOT NULL,
+  `uid` INT NOT NULL,
+  `finger_id` TINYINT NOT NULL,
+  `valid_flag` TINYINT NOT NULL DEFAULT '1',
+  `template_size` INT NOT NULL,
+  `template_data` MEDIUMBLOB NOT NULL,
+  `created_at` TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_uid_fid` (`uid`,`finger_id`),
+  KEY `idx_user_id` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Legacy and Extended Compatibility Tables

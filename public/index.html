@@ -359,8 +359,11 @@
           <!-- Status Filter Tabs -->
           <div class="filter-pills-row">
             <button class="filter-pill active" data-live-filter="all">All Personnel (<span id="count-all">0</span>)</button>
-            <button class="filter-pill" data-live-filter="in">Present / In (<span id="count-in">0</span>)</button>
-            <button class="filter-pill" data-live-filter="out">Clocked Out (<span id="count-out">0</span>)</button>
+            <button class="filter-pill" data-live-filter="in">&#x1F7E2; Present / In (<span id="count-in">0</span>)</button>
+            <button class="filter-pill" data-live-filter="out">&#x1F7E1; Clocked Out (<span id="count-out">0</span>)</button>
+            <button class="filter-pill" data-live-filter="overtime" title="Working past 5 PM — may be overtime/bonus eligible">&#x1F7E0; Overtime (<span id="count-overtime">0</span>)</button>
+            <button class="filter-pill" data-live-filter="early_out" title="Left before 3:00 PM — HR flag for early departure">&#x1F534; Early Out (<span id="count-early-out">0</span>)</button>
+            <button class="filter-pill" data-live-filter="unconfirmed_out" title="No swipe-out recorded — possible missed punch">&#x26AA; Unconfirmed (<span id="count-unconfirmed">0</span>)</button>
             <button class="filter-pill" data-live-filter="absent">Absent (<span id="count-absent">0</span>)</button>
           </div>
 

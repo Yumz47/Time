@@ -128,14 +128,25 @@ test('Live Attendance Board: should return live status and employee records', as
   assert.equal(typeof data.summary.total, 'number');
   assert.equal(typeof data.summary.present, 'number');
   assert.equal(typeof data.summary.absent, 'number');
+  // HR-specific summary fields
+  assert.equal(typeof data.summary.currently_in,    'number', 'summary.currently_in must be numeric');
+  assert.equal(typeof data.summary.currently_out,   'number', 'summary.currently_out must be numeric');
+  assert.equal(typeof data.summary.overtime,        'number', 'summary.overtime must be numeric');
+  assert.equal(typeof data.summary.early_out,       'number', 'summary.early_out must be numeric');
+  assert.equal(typeof data.summary.unconfirmed_out, 'number', 'summary.unconfirmed_out must be numeric');
   assert.ok(Array.isArray(data.employees));
   assert.ok(data.employees.length > 0);
 
+  // All valid HR statuses — the board now distinguishes 6 meaningful states
+  const HR_STATUSES = ['in', 'out', 'absent', 'overtime', 'early_out', 'unconfirmed_out'];
   const firstEmp = data.employees[0];
   assert.ok('user_id' in firstEmp);
   assert.ok('name' in firstEmp);
   assert.ok('status' in firstEmp);
-  assert.ok(['in', 'out', 'absent'].includes(firstEmp.status));
+  assert.ok(
+    HR_STATUSES.includes(firstEmp.status),
+    `Employee status "${firstEmp.status}" must be one of: ${HR_STATUSES.join(', ')}`
+  );
 });
 
 test('Live Attendance Board: defaults to actual current date and includes server timestamp when date omitted', async () => {

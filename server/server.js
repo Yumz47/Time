@@ -296,23 +296,30 @@ app.get('/api/attendance/live', requireAuth, async (req, res) => {
       let status = 'absent';
       if (r.last_punch_time) {
         if (r.last_punch_type === 'out') {
-          status = 'out';
+          // ── Physically swiped OUT at terminal ──────────────────────────────
+          // Leaving before 3:00 PM is an HR flag: early departure.
+          const lastOut = new Date(r.last_punch_time);
+          const outHour = lastOut.getHours() + lastOut.getMinutes() / 60;
+          status = (outHour < 15) ? 'early_out' : 'out';
         } else {
-          // Check if employee clocked out, has a late afternoon punch, or forgot to clock out after shift end
-          const firstInMs = r.first_in_time ? new Date(r.first_in_time).getTime() : 0;
-          const lastPunchDate = new Date(r.last_punch_time);
-          const gapHours = firstInMs ? (lastPunchDate.getTime() - firstInMs) / (1000 * 3600) : 0;
-          const localHour = lastPunchDate.getHours();
-
+          // ── Last recorded punch was IN — employee has not swiped out yet ───
+          // We NEVER silently convert in→out just because 5 PM passed.
+          // Instead we use HR-meaningful status labels.
           const now = new Date();
           const todayStr = getLocalDateString(now);
           const targetIsPast = (targetDate < todayStr);
           const currentHour = now.getHours() + now.getMinutes() / 60;
-          const shiftEndedToday = (targetDate === todayStr && currentHour >= 17.0);
 
-          if (targetIsPast || shiftEndedToday || (gapHours >= 4 && (localHour >= 16 || gapHours >= 7))) {
-            status = 'out';
+          if (targetIsPast || currentHour >= 22.0) {
+            // Past day OR after 10 PM: still showing IN with no swipe-out.
+            // HR flag: unconfirmed departure — may indicate a missed punch.
+            status = 'unconfirmed_out';
+          } else if (currentHour >= 17.0) {
+            // After 5 PM standard shift end but before 10 PM: employee may
+            // genuinely be working overtime. Mark as overtime — bonus eligible.
+            status = 'overtime';
           } else {
+            // Within normal working hours and last punch was IN → present.
             status = 'in';
           }
         }
@@ -327,10 +334,14 @@ app.get('/api/attendance/live', requireAuth, async (req, res) => {
 
     const summary = {
       total: data.length,
+      // HR-meaningful breakdown — each status is distinct and auditable
       present: data.filter(r => r.status !== 'absent').length,
-      absent: data.filter(r => r.status === 'absent').length,
-      currently_in: data.filter(r => r.status === 'in').length,
-      currently_out: data.filter(r => r.status === 'out').length,
+      absent:          data.filter(r => r.status === 'absent').length,
+      currently_in:    data.filter(r => r.status === 'in').length,
+      currently_out:   data.filter(r => r.status === 'out').length,
+      overtime:        data.filter(r => r.status === 'overtime').length,
+      early_out:       data.filter(r => r.status === 'early_out').length,
+      unconfirmed_out: data.filter(r => r.status === 'unconfirmed_out').length,
     };
 
     const now = new Date();

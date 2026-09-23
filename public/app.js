@@ -543,10 +543,17 @@ document.addEventListener('DOMContentLoaded', () => {
         liveKpiOut.textContent = data.summary.currently_out;
         liveKpiAbsent.textContent = data.summary.absent;
 
-        document.getElementById('count-all').textContent = data.summary.total;
-        document.getElementById('count-in').textContent = data.summary.currently_in;
-        document.getElementById('count-out').textContent = data.summary.currently_out;
+        document.getElementById('count-all').textContent    = data.summary.total;
+        document.getElementById('count-in').textContent     = data.summary.currently_in;
+        document.getElementById('count-out').textContent    = data.summary.currently_out;
         document.getElementById('count-absent').textContent = data.summary.absent;
+        // HR-specific counts (elements may not exist in older builds, guard gracefully)
+        const elOT  = document.getElementById('count-overtime');
+        const elEO  = document.getElementById('count-early-out');
+        const elUC  = document.getElementById('count-unconfirmed');
+        if (elOT) elOT.textContent = data.summary.overtime        || 0;
+        if (elEO) elEO.textContent = data.summary.early_out       || 0;
+        if (elUC) elUC.textContent = data.summary.unconfirmed_out || 0;
       }
 
       // Update Live Board Last Refreshed Date & Time indicator
@@ -573,10 +580,13 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderLiveBoard() {
     const q = (liveSearchInput.value || '').trim().toLowerCase();
     const filtered = liveBoardData.filter(emp => {
-      // status filter
-      if (liveActiveFilter === 'in' && emp.status !== 'in') return false;
-      if (liveActiveFilter === 'out' && emp.status !== 'out') return false;
-      if (liveActiveFilter === 'absent' && emp.status !== 'absent') return false;
+      // status filter — supports all HR status types
+      if (liveActiveFilter === 'in'              && emp.status !== 'in')              return false;
+      if (liveActiveFilter === 'out'             && emp.status !== 'out')             return false;
+      if (liveActiveFilter === 'absent'          && emp.status !== 'absent')          return false;
+      if (liveActiveFilter === 'overtime'        && emp.status !== 'overtime')        return false;
+      if (liveActiveFilter === 'early_out'       && emp.status !== 'early_out')       return false;
+      if (liveActiveFilter === 'unconfirmed_out' && emp.status !== 'unconfirmed_out') return false;
 
       // search filter
       if (q) {
@@ -595,14 +605,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
     liveBoardGrid.innerHTML = filtered.map(emp => {
       const statusClass = `status-${emp.status}`;
-      const statusLabel = emp.status === 'in' ? 'IN' : emp.status === 'out' ? 'OUT' : 'ABSENT';
+      // HR-correct label map
+      const STATUS_LABELS = {
+        in:               'IN',
+        out:              'OUT',
+        absent:           'ABSENT',
+        overtime:         'OVERTIME',
+        early_out:        'EARLY OUT',
+        unconfirmed_out:  'UNCONFIRMED',
+      };
+      const STATUS_HINTS = {
+        overtime:        'Still clocked-in past 5 PM — may be eligible for overtime pay.',
+        early_out:       'HR FLAG: Departed before 3:00 PM — review for half-day or deduction.',
+        unconfirmed_out: 'HR FLAG: No clock-out recorded — possible missed swipe, review required.',
+      };
+      const statusLabel = STATUS_LABELS[emp.status] || emp.status.toUpperCase();
+      const hrHint = STATUS_HINTS[emp.status] || '';
+      const hrHintAttr = hrHint ? ` title="${hrHint}"` : '';
       const lastPunchFormatted = emp.last_punch_time ? formatTime(emp.last_punch_time) : 'No punch today';
       const firstInFormatted = emp.first_in_time ? formatTime(emp.first_in_time) : '--';
       const deviceTag = emp.device_alias ? `via ${escapeHtml(emp.device_alias)}` : '';
       const initials = (emp.name || '?').split(' ').map(n => n.charAt(0)).join('').substring(0, 2).toUpperCase();
 
       return `
-        <div class="employee-card ${statusClass}" data-user-id="${emp.user_id}">
+        <div class="employee-card ${statusClass}" data-user-id="${emp.user_id}"${hrHintAttr}>
           <div class="card-top">
             <div class="card-avatar">${initials}</div>
             <div class="card-title-group">

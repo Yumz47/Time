@@ -1997,9 +1997,13 @@ body.role-viewer .user-session-role {
   width: 4px;
 }
 
-.employee-card.status-in::before { background: var(--accent-emerald); }
-.employee-card.status-out::before { background: var(--accent-amber); }
-.employee-card.status-absent::before { background: var(--text-muted); }
+.employee-card.status-in::before            { background: var(--accent-emerald); }
+.employee-card.status-out::before           { background: var(--accent-amber); }
+.employee-card.status-absent::before        { background: var(--text-muted); }
+/* HR-specific statuses */
+.employee-card.status-overtime::before      { background: #f97316; } /* Orange — overtime/bonus-eligible */
+.employee-card.status-early_out::before     { background: var(--accent-rose); }  /* Red — HR flag: left early */
+.employee-card.status-unconfirmed_out::before { background: #64748b; } /* Slate — HR flag: missed swipe-out */
 
 .card-top {
   display: flex;
@@ -2116,6 +2120,34 @@ body.role-viewer .user-session-role {
   background: rgba(244, 63, 94, 0.12);
   color: var(--accent-rose);
   border: 1px solid rgba(244, 63, 94, 0.25);
+}
+
+/* ── HR Live Board Status Pills ─────────────────────────────────────────────── */
+/* overtime: working past 5 PM — bonus eligible */
+.status-pill.status-overtime {
+  background: rgba(249, 115, 22, 0.12);
+  color: #f97316;
+  border: 1px solid rgba(249, 115, 22, 0.35);
+  animation: pulse-overtime 2.5s ease-in-out infinite;
+}
+@keyframes pulse-overtime {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(249, 115, 22, 0.25); }
+  50%       { box-shadow: 0 0 0 5px rgba(249, 115, 22, 0); }
+}
+
+/* early_out: swiped out before 3:00 PM — HR penalty flag */
+.status-pill.status-early_out {
+  background: rgba(244, 63, 94, 0.12);
+  color: var(--accent-rose);
+  border: 1px solid rgba(244, 63, 94, 0.35);
+}
+
+/* unconfirmed_out: still IN on record past 7 PM or previous day — HR review needed */
+.status-pill.status-unconfirmed_out {
+  background: rgba(100, 116, 139, 0.15);
+  color: #94a3b8;
+  border: 1px solid rgba(100, 116, 139, 0.35);
+  border-style: dashed;
 }
 
 /* ─── 4. SMART REPORTS SUBTABS & FILTER BAR ─────────────────────────────────── */
